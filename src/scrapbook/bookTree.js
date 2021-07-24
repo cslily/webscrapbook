@@ -91,10 +91,9 @@
       }
 
       const highlights = new Map();
-      Array.prototype.forEach.call(
-        this.treeElem.querySelectorAll('.highlight'),
-        x => this.getXpaths(x.parentElement, highlights, {includeParents: false})
-      );
+      for (const elem of this.treeElem.querySelectorAll('.highlight')) {
+        this.getXpaths(elem.parentElement, highlights, {includeParents: false})
+      }
 
       // rebuild
       super.rebuild();
@@ -109,18 +108,21 @@
 
       // restore highlights
       for (const xpath of highlights.keys()) {
-        const elem = document.evaluate(xpath, this.treeElem).iterateNext();
+        const elem = document.evaluate(xpath, this.treeElem, null, 0, null).iterateNext();
         if (!elem) { continue; }
         elem.controller.classList.add('highlight');
       }
 
       if (anchorElem) {
-        const elem = document.evaluate(anchorElem, this.treeElem).iterateNext();
-        if (elem) { this.anchorElem = elem; }
+        const elem = document.evaluate(anchorElem, this.treeElem, null, 0, null).iterateNext();
+        if (elem) {
+          this.anchorElem = elem;
+          elem.controller.classList.add('anchor');
+        }
       }
 
       if (lastHighlightElem) {
-        const elem = document.evaluate(lastHighlightElem, this.treeElem).iterateNext();
+        const elem = document.evaluate(lastHighlightElem, this.treeElem, null, 0, null).iterateNext();
         if (elem) { this.lastHighlightElem = elem; }
       }
 
@@ -136,10 +138,9 @@
     async saveViewStatus() {
       const selects = {};
       const map = new Map();
-      Array.prototype.forEach.call(
-        this.treeElem.querySelectorAll('ul.container:not([hidden])'),
-        x => this.getXpaths(x.parentElement, map)
-      );
+      for (const elem of this.treeElem.querySelectorAll('ul.container:not([hidden])')) {
+        this.getXpaths(elem.parentElement, map);
+      }
       for (const [k, v] of map.entries()) {
         selects[k] = v;
       }
@@ -161,7 +162,7 @@
         if (!data) { return; }
 
         for (const [xpath, willOpen] of Object.entries(data.selects)) {
-          const elem = document.evaluate(xpath, this.treeElem).iterateNext();
+          const elem = document.evaluate(xpath, this.treeElem, null, 0, null).iterateNext();
           if (!elem) { continue; }
           if (willOpen) { this.toggleItem(elem, true); }
         }
@@ -241,13 +242,8 @@
       }
 
       // load child nodes if not loaded yet
-      if (willOpen && !container.hasAttribute('data-loaded'))  {
-        if (this.book.toc[elem.getAttribute('data-id')]) {
-          for (const id of this.book.toc[elem.getAttribute('data-id')]) {
-            this.addItem(id, elem);
-          }
-        }
-        container.setAttribute('data-loaded', '');
+      if (willOpen)  {
+        this.loadChildren(elem);
       }
 
       container.hidden = !willOpen;
@@ -269,28 +265,76 @@
       }
     }
 
+    loadChildren(elem) {
+      const container = elem.container;
+      if (!container) { return; }
+      if (container.hasAttribute('data-loaded')) { return; }
+
+      const toc = this.book.toc[elem.getAttribute('data-id')];
+      if (toc) {
+        for (const id of toc) {
+          this.addItem(id, elem);
+        }
+      }
+      container.setAttribute('data-loaded', '');
+    }
+
+    /**
+     * Recursively load non-circular descendant elements
+     */
+    loadDescendants(elem) {
+      const container = elem.container;
+      if (!container) { return; }
+
+      const idPath = [];
+      let cur = elem;
+      while (this.treeElem.contains(cur)) {
+        idPath.unshift(cur.getAttribute('data-id'));
+        cur = this.getParent(cur);
+      }
+      const idPathSet = new Set(idPath);
+      if (idPathSet.size < idPath.length) {
+        // circular
+        return;
+      }
+
+      const loadChildren = (elem) => {
+        const id = elem.getAttribute('data-id');
+        if (idPathSet.has(id)) { return; }
+
+        this.loadChildren(elem);
+        const container = elem.container;
+        if (!container) { return; }
+
+        idPathSet.add(id);
+        for (const child of container.children) {
+          loadChildren(child);
+        }
+        idPathSet.delete(id);
+      };
+
+      idPathSet.delete(elem.getAttribute('data-id'));
+      loadChildren(elem);
+    }
+
     refreshItem(id) {
-      Array.prototype.forEach.call(
-        this.treeElem.querySelectorAll(`[data-id="${CSS.escape(id)}"]`),
-        (itemElem) => {
-          this.refreshItemElem(itemElem, this.book.meta[id]);
-        });
+      for (const itemElem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(id)}"]`)) {
+        this.refreshItemElem(itemElem, this.book.meta[id]);
+      }
     }
 
     insertItem(id, parentId, index) {
-      Array.prototype.forEach.call(
-        this.treeElem.querySelectorAll(`[data-id="${CSS.escape(parentId)}"]`),
-        (parentElem) => {
-          this.itemMakeContainer(parentElem);
-          if (!parentElem.container.hasAttribute('data-loaded')) { return; }
-          this.addItem(id, parentElem, index);
-        });
+      for (const parentElem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(parentId)}"]`)) {
+        this.itemMakeContainer(parentElem);
+        if (!parentElem.container.hasAttribute('data-loaded')) { return; }
+        this.addItem(id, parentElem, index);
+      }
     }
 
     /**
      * Remove an from the tree DOM
      *
-     * @param {Array[Element]} itemElems - A cached item elements in the tree for faster access.
+     * @param {HTMLElement[]} [itemElems] - Cached item elements in the tree for faster access.
      */
     removeItem(parentId, index, itemElems) {
       Array.prototype.filter.call(
@@ -391,7 +435,7 @@
         }
 
         // move to closest parent
-        let parent = this.getParentAndIndex(anchorElem).parentItemElem;
+        let parent = this.getParent(anchorElem);
         if (parent === this.rootElem) {
           parent = null;
         }
@@ -473,8 +517,6 @@
       curElem.scrollIntoView();
       this.highlightItem(curElem, true, {reselect: true});
       this.saveViewStatus();
-
-      return true;
     }
 
     onItemTogglerClick(event) {

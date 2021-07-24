@@ -31,6 +31,9 @@ const baseOptions = {
   "capture.mergeCssResources": false,
   "capture.script": "save",
   "capture.noscript": "save",
+  "capture.contentSecurityPolicy": "remove",
+  "capture.preload": "remove",
+  "capture.prefetch": "remove",
   "capture.base": "blank",
   "capture.formStatus": "keep",
   "capture.shadowDom": "save",
@@ -42,7 +45,6 @@ const baseOptions = {
   "capture.downLink.doc.delay": null,
   "capture.downLink.doc.urlFilter": "",
   "capture.downLink.urlFilter": "",
-  "capture.removeIntegrity": true,
   "capture.referrerPolicy": "strict-origin-when-cross-origin",
   "capture.referrerSpoofSource": false,
   "capture.recordDocumentMeta": true,
@@ -356,7 +358,7 @@ async function test_capture_xhtml() {
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
   assert(doc);
-  var metaRefreshElem = doc.querySelector('meta[http-equiv="refresh"][content="0;url=index.xhtml"]');
+  var metaRefreshElem = doc.querySelector('meta[http-equiv="refresh"][content="0; url=index.xhtml"]');
   assert(metaRefreshElem);
 
   var indexFile = zip.file('index.xhtml');
@@ -421,7 +423,7 @@ async function test_capture_xhtml() {
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
   assert(doc);
-  var metaRefreshElem = doc.querySelector('meta[http-equiv="refresh"][content="0;url=index.xhtml"]');
+  var metaRefreshElem = doc.querySelector('meta[http-equiv="refresh"][content="0; url=index.xhtml"]');
   assert(metaRefreshElem);
 
   var indexFile = zip.file(topdir + 'index.xhtml');
@@ -512,7 +514,7 @@ async function test_capture_file() {
   var doc = await readFileAsDocument(indexBlob);
   assert(doc);
   assert(doc.documentElement.getAttribute('data-scrapbook-type') === 'file');
-  assert(doc.querySelector('meta[http-equiv="refresh"][content="0;url=file.bmp"]'));
+  assert(doc.querySelector('meta[http-equiv="refresh"][content="0; url=file.bmp"]'));
   assert(doc.querySelector('a[href="file.bmp"]'));
   assert(!doc.querySelector('img'));
 
@@ -550,7 +552,7 @@ async function test_capture_file() {
   var doc = await readFileAsDocument(indexBlob);
   assert(doc);
   assert(doc.documentElement.getAttribute('data-scrapbook-type') === 'file');
-  assert(doc.querySelector('meta[http-equiv="refresh"][content="0;url=file.bmp"]'));
+  assert(doc.querySelector('meta[http-equiv="refresh"][content="0; url=file.bmp"]'));
   assert(doc.querySelector('a[href="file.bmp"]'));
   assert(!doc.querySelector('img'));
 
@@ -575,7 +577,7 @@ async function test_capture_file() {
   assert(doc.documentElement.getAttribute('data-scrapbook-type') === 'file');
   var metaRefreshElem = doc.querySelector('meta[http-equiv="refresh"][content]');
   assert(metaRefreshElem);
-  assert(metaRefreshElem.getAttribute('content') === "0;url=" 
+  assert(metaRefreshElem.getAttribute('content') === "0; url=" 
       + "data:image/bmp;filename=file.bmp;base64,Qk08AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABACAAAAAAAAYAAAASCwAAEgsAAAAAAAAAAAAAAAD/AAAA");
   assert(!doc.querySelector('a[href="file.bmp"]')); // do NOT generate anchor to avoid long content
   assert(!doc.querySelector('img'));
@@ -614,7 +616,7 @@ async function test_capture_file_charset() {
   assert(doc.querySelector('meta[charset="UTF-8"]'));
   assert(doc.documentElement.getAttribute('data-scrapbook-type') === 'file');
   assert(doc.documentElement.getAttribute('data-scrapbook-charset') === 'Big5');
-  assert(doc.querySelector('meta[http-equiv="refresh"][content="0;url=big5.py"]'));
+  assert(doc.querySelector('meta[http-equiv="refresh"][content="0; url=big5.py"]'));
 
   var savedFile = zip.file(topdir + 'big5.py');
   var text = (await readFileAsText(await savedFile.async('blob'), "Big5")).trim();
@@ -643,7 +645,7 @@ async function test_capture_file_charset() {
   assert(doc.querySelector('meta[charset="UTF-8"]'));
   assert(doc.documentElement.getAttribute('data-scrapbook-type') === 'file');
   assert(doc.documentElement.getAttribute('data-scrapbook-charset') === 'UTF-8');
-  assert(doc.querySelector('meta[http-equiv="refresh"][content="0;url=utf8.txt"]'));
+  assert(doc.querySelector('meta[http-equiv="refresh"][content="0; url=utf8.txt"]'));
 
   var savedFile = zip.file(topdir + 'utf8.txt');
   var text = (await readFileAsText(await savedFile.async('blob'))).trim();
@@ -1774,7 +1776,7 @@ async function test_capture_bookmark() {
   assert(html.getAttribute('data-scrapbook-create').match(/^\d{17}$/));
   assert(html.getAttribute('data-scrapbook-type') === 'bookmark');
 
-  assert(doc.querySelector(`meta[http-equiv="refresh"][content="0;url=${localhost}/capture_bookmark/index.html"]`));
+  assert(doc.querySelector(`meta[http-equiv="refresh"][content="0; url=${localhost}/capture_bookmark/index.html"]`));
   assert(doc.querySelector(`a[href="${localhost}/capture_bookmark/index.html"]`));
   assert(doc.querySelector(`link[rel="shortcut icon"][href="data:image/bmp;base64,Qk08AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABACAAAAAAAAYAAAASCwAAEgsAAAAAAAAAAAAAAAD/AAAA"]`));
 }
@@ -2386,11 +2388,13 @@ async function test_capture_frame_singleHtml() {
   var frameDoc = (await xhr({url: frameSrc, responseType: "document"})).response;
   assert(frameDoc.querySelector('p').textContent.trim() === `frame1 content modified`);
 
-  var frameSrc = `data:application\/xhtml\+xml;charset=UTF-8,${encodeURIComponent(frames[1].getAttribute('srcdoc'))}`;
+  var frameSrc = frames[1].getAttribute('src');
+  assert(frameSrc.match(/^data:application\/xhtml\+xml;charset=UTF-8;filename=frame2\.xhtml,/));
   var frameDoc = (await xhr({url: frameSrc, responseType: "document"})).response;
   assert(frameDoc.querySelector('p').textContent.trim() === `frame2 content modified`);
 
-  var frameSrc = `data:image\/svg\+xml;charset=UTF-8,${encodeURIComponent(frames[2].getAttribute('srcdoc'))}`;
+  var frameSrc = frames[2].getAttribute('src');
+  assert(frameSrc.match(/^data:image\/svg\+xml;charset=UTF-8;filename=frame3\.svg,/));
   var frameDoc = (await xhr({url: frameSrc, responseType: "document"})).response;
   assert(frameDoc.querySelector('a').getAttribute("href").trim() === `${localhost}/capture_frame/same-origin.html`);
 
@@ -4151,7 +4155,7 @@ async function test_capture_css_adoptedStyleSheets() {
 
   var host1 = doc.querySelector('#shadow1');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   var styleElems = shadow1.querySelectorAll('style');
   assert(styleElems[1].textContent.trim() === `#adopted { background-color: rgb(0, 255, 0); }`);
@@ -4772,7 +4776,7 @@ async function test_capture_imageBackground_used2() {
 }
 
 /**
- * Check if used background images in a shadowRoot are considered
+ * Check if used background images in a shadow DOM are considered
  *
  * capture.imageBackground
  */
@@ -4798,7 +4802,7 @@ async function test_capture_imageBackground_used3() {
 
   var host1 = doc.querySelector('#shadow1');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('style').textContent.trim() === `\
 :host { background-image: url("yellow.bmp"); }
@@ -4846,7 +4850,7 @@ async function test_capture_imageBackground_used4() {
 
   var host1 = doc.querySelector('#shadow1');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('style').textContent.trim() === `\
 @keyframes shadow1 {
@@ -4907,7 +4911,7 @@ async function test_capture_imageBackground_used5() {
 
   var host1 = doc.querySelector('#shadow1');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('style').textContent.trim() === `#adopted { background-image: url("shadow.bmp"); }`);
 }
@@ -5023,7 +5027,7 @@ async function test_capture_canvas() {
   assert(!doc.querySelector('#c1').hasAttribute("data-scrapbook-canvas"));
   assert(doc.querySelector('#c2').getAttribute("data-scrapbook-canvas").match(/^data:image\/png;base64,/));
 
-  // canvas in the shadow root
+  // canvas in the shadow DOM
   var blob = await capture({
     url: `${localhost}/capture_canvas/canvas2.html`,
     options: Object.assign({}, baseOptions, options),
@@ -5040,7 +5044,7 @@ async function test_capture_canvas() {
   
   var host = doc.querySelector('span');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host.getAttribute("data-scrapbook-shadowdom");
   var shadow = frag.content;
   assert(shadow.querySelector('canvas').getAttribute('data-scrapbook-canvas').match(/^data:image\/png;base64,/));
 
@@ -5064,7 +5068,7 @@ async function test_capture_canvas() {
   assert(!doc.querySelector('#c1').hasAttribute("data-scrapbook-canvas"));
   assert(!doc.querySelector('#c2').hasAttribute("data-scrapbook-canvas"));
 
-  // canvas in the shadow root
+  // canvas in the shadow DOM
   var blob = await capture({
     url: `${localhost}/capture_canvas/canvas2.html`,
     options: Object.assign({}, baseOptions, options),
@@ -5081,7 +5085,7 @@ async function test_capture_canvas() {
 
   var host = doc.querySelector('span');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host.getAttribute("data-scrapbook-shadowdom");
   var shadow = frag.content;
   assert(!shadow.querySelector('canvas').hasAttribute('data-scrapbook-canvas'));
 
@@ -5105,7 +5109,7 @@ async function test_capture_canvas() {
   assert(!doc.querySelector('#c1'));
   assert(!doc.querySelector('#c2'));
 
-  // canvas in the shadow root
+  // canvas in the shadow DOM
   var blob = await capture({
     url: `${localhost}/capture_canvas/canvas2.html`,
     options: Object.assign({}, baseOptions, options),
@@ -5122,7 +5126,7 @@ async function test_capture_canvas() {
 
   var host = doc.querySelector('span');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host.getAttribute("data-scrapbook-shadowdom");
   var shadow = frag.content;
   assert(!shadow.querySelector('canvas'));
 }
@@ -5755,7 +5759,7 @@ async function test_capture_font_used3() {
 
   var host1 = doc.querySelector('#shadow1');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('style').textContent.trim() === `\
 @font-face { font-family: shadow1; src: url("shadow1.woff"); }
@@ -6040,10 +6044,12 @@ async function test_capture_embed() {
  * capture.object
  */
 async function test_capture_object() {
-  /* capture.object = save */
   var options = {
-    "capture.object": "save",
+    "capture.frameRename": false,
   };
+
+  /* capture.object = save */
+  options["capture.object"] = "save";
   var blob = await capture({
     url: `${localhost}/capture_object/object.html`,
     options: Object.assign({}, baseOptions, options),
@@ -6051,17 +6057,17 @@ async function test_capture_object() {
 
   var zip = await new JSZip().loadAsync(blob);
   assert(zip.files['demo.svg']);
+  assert(zip.files['green.bmp']);
 
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
-  var object = doc.querySelector('object');
-  assert(object.getAttribute('data') === `demo.svg`);
+  var objects = doc.querySelectorAll('object');
+  assert(objects[0].getAttribute('data') === `demo.svg`);
+  assert(objects[1].getAttribute('data') === `green.bmp`);
 
   /* capture.object = link */
-  var options = {
-    "capture.object": "link",
-  };
+  options["capture.object"] = "link";
   var blob = await capture({
     url: `${localhost}/capture_object/object.html`,
     options: Object.assign({}, baseOptions, options),
@@ -6073,13 +6079,12 @@ async function test_capture_object() {
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
-  var object = doc.querySelector('object');
-  assert(object.getAttribute('data') === `${localhost}/capture_object/demo.svg`);
+  var objects = doc.querySelectorAll('object');
+  assert(objects[0].getAttribute('data') === `${localhost}/capture_object/demo.svg`);
+  assert(objects[1].getAttribute('data') === `${localhost}/capture_object/green.bmp`);
 
   /* capture.object = blank */
-  var options = {
-    "capture.object": "blank",
-  };
+  options["capture.object"] = "blank";
   var blob = await capture({
     url: `${localhost}/capture_object/object.html`,
     options: Object.assign({}, baseOptions, options),
@@ -6091,13 +6096,12 @@ async function test_capture_object() {
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
-  var object = doc.querySelector('object');
-  assert(!object.hasAttribute('data'));
+  var objects = doc.querySelectorAll('object');
+  assert(!objects[0].hasAttribute('data'));
+  assert(!objects[1].hasAttribute('data'));
 
   /* capture.object = remove */
-  var options = {
-    "capture.object": "remove",
-  };
+  options["capture.object"] = "remove";
   var blob = await capture({
     url: `${localhost}/capture_object/object.html`,
     options: Object.assign({}, baseOptions, options),
@@ -6109,8 +6113,145 @@ async function test_capture_object() {
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
-  var object = doc.querySelector('object');
-  assert(!object);
+  assert(!doc.querySelector('object'));
+}
+
+/**
+ * Headlessly capture object content like a frame.
+ *
+ * capture.object
+ */
+async function test_capture_object2() {
+  var options = {
+    "capture.saveResourcesSequentially": true,
+    "capture.object": "save",
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_object2/cross-origin.py`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  var frames = doc.querySelectorAll('object');
+
+  // frame1.html
+  var frame = frames[0];
+  assert(frame.getAttribute('data') === `index_1.html`);
+  var frameFile = zip.file(frame.getAttribute('data'));
+  var frameBlob = new Blob([await frameFile.async('blob')], {type: "text/html"});
+  var frameDoc = await readFileAsDocument(frameBlob);
+  assert(frameDoc.querySelector('p').textContent.trim() === `frame1 content`);
+  assert(frameDoc.querySelector('img').getAttribute('src') === 'red.bmp');
+
+  var imgFile = zip.file('red.bmp');
+  assert(imgFile);
+  var imgData = await imgFile.async('base64');
+  assert(imgData === 'Qk08AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABACAAAAAAAAYAAAASCwAAEgsAAAAAAAAAAAAAAAD/AAAA');
+
+  // frame2.xhtml
+  var frame = frames[1];
+  assert(frame.getAttribute('data') === `index_2.xhtml`);
+  var frameFile = zip.file(frame.getAttribute('data'));
+  var frameBlob = new Blob([await frameFile.async('blob')], {type: "application/xhtml+xml"});
+  var frameDoc = await readFileAsDocument(frameBlob);
+  assert(frameDoc.querySelector('p').textContent.trim() === `frame2 content`);
+  assert(frameDoc.querySelector('img').getAttribute('src') === 'red.bmp');
+
+  // frame3.svg
+  var frame = frames[2];
+  assert(frame.getAttribute('data') === `index_3.svg`);
+  var frameFile = zip.file(frame.getAttribute('data'));
+  var frameBlob = new Blob([await frameFile.async('blob')], {type: "image/svg+xml"});
+  var frameDoc = await readFileAsDocument(frameBlob);
+  assert(frameDoc.querySelector('a').getAttribute("href").trim() === `${localhost2}/capture_frame/same-origin.html`);
+
+  // text.txt
+  var frame = frames[3];
+  assert(frame.getAttribute('data') === 'text.txt');
+  var frameFile = zip.file(frame.getAttribute('data'));
+  var text = (await readFileAsText(await frameFile.async('blob'))).trim();
+  assert(text === "Lorem ipsum dolor sit amet. 旡羖甾惤怤齶覅煋朸汊狦芎沝抾邞塯乇泹銧裧。");
+}
+
+/**
+ * Check if circular object referencing is handled correctly like a frame.
+ *
+ * capture.object
+ */
+async function test_capture_object_circular() {
+  /* capture.saveAs = zip */
+  // link to corresponding downloaded frame file
+  var options = {
+    "capture.object": "save",
+    "capture.saveAs": "zip",
+  };
+
+  var blob = await captureHeadless({
+    url: `${localhost}/capture_object_circular/index.html`,
+    mode: "source",
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  // frame1.html
+  var frame = doc.querySelector('object');
+  var frameSrc = frame.getAttribute('data');
+  assert(frameSrc === 'index_1.html');
+  var frameFile = zip.file(frameSrc);
+  var frameBlob = new Blob([await frameFile.async('blob')], {type: "text/html"});
+  var frameDoc = await readFileAsDocument(frameBlob);
+
+  // frame2.html
+  var frame = frameDoc.querySelector('object');
+  var frameSrc = frame.getAttribute('data');
+  assert(frameSrc === 'index_2.html');
+  var frameFile = zip.file(frameSrc);
+  var frameBlob = new Blob([await frameFile.async('blob')], {type: "text/html"});
+  var frameDoc = await readFileAsDocument(frameBlob);
+
+  // index.html
+  var frame = frameDoc.querySelector('object');
+  var frameSrc = frame.getAttribute('data');
+  assert(frameSrc === 'index.html');
+
+  /* capture.saveAs = singleHtml */
+  // rewrite a circular referencing with urn:scrapbook:download:circular:url:...
+  var options = {
+    "capture.object": "save",
+    "capture.saveAs": "singleHtml",
+  };
+
+  var blob = await captureHeadless({
+    url: `${localhost}/capture_object_circular/index.html`,
+    mode: "source",
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var doc = await readFileAsDocument(blob);
+
+  // frame1.html
+  var frame = doc.querySelector('object');
+  var frameSrc = frame.getAttribute('data');
+  var frameDoc = (await xhr({url: frameSrc, responseType: "document"})).response;
+
+  // frame2.html
+  var frame = frameDoc.querySelector('object');
+  var frameSrc = frame.getAttribute('data');
+  var frameDoc = (await xhr({url: frameSrc, responseType: "document"})).response;
+
+  // index.html
+  var frame = frameDoc.querySelector('object');
+  assert(frame.getAttribute('data') === `urn:scrapbook:download:circular:url:${localhost}/capture_object_circular/index.html`);
 }
 
 /**
@@ -6200,6 +6341,101 @@ async function test_capture_applet() {
 /**
  * Check if option works
  *
+ * capture.preload
+ */
+async function test_capture_preload() {
+  /* capture.preload = blank */
+  var options = {
+    "capture.preload": "blank",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_preload/preload.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  var preloads = doc.querySelectorAll('link[rel="preload"]');
+  assert(!preloads[0].hasAttribute('href'));
+  assert(!preloads[1].hasAttribute('href'));
+  assert(!preloads[2].hasAttribute('href'));
+  assert(!preloads[3].hasAttribute('href'));
+  assert(!preloads[4].hasAttribute('imagesrcset'));
+  var preloads = doc.querySelectorAll('link[rel="modulepreload"]');
+  assert(!preloads[0].hasAttribute('href'));
+  var preloads = doc.querySelectorAll('link[rel="dns-prefetch"]');
+  assert(!preloads[0].hasAttribute('href'));
+  var preloads = doc.querySelectorAll('link[rel="preconnect"]');
+  assert(!preloads[0].hasAttribute('href'));
+
+  /* capture.preload = remove */
+  var options = {
+    "capture.preload": "remove",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_preload/preload.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  assert(!doc.querySelector('link[rel="preload"]'));
+  assert(!doc.querySelector('link[rel="modulepreload"]'));
+  assert(!doc.querySelector('link[rel="dns-prefetch"]'));
+  assert(!doc.querySelector('link[rel="preconnect"]'));
+}
+
+/**
+ * Check if option works
+ *
+ * capture.prefetch
+ */
+async function test_capture_prefetch() {
+  /* capture.prefetch = blank */
+  var options = {
+    "capture.prefetch": "blank",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_prefetch/prefetch.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  var prefetches = doc.querySelectorAll('link[rel="prefetch"]');
+  assert(!prefetches[0].hasAttribute('href'));
+  assert(!prefetches[1].hasAttribute('href'));
+  assert(!prefetches[2].hasAttribute('href'));
+  assert(!prefetches[3].hasAttribute('href'));
+  var prefetches = doc.querySelectorAll('link[rel="prerender"]');
+  assert(!prefetches[0].hasAttribute('href'));
+
+  /* capture.prefetch = remove */
+  var options = {
+    "capture.prefetch": "remove",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_prefetch/prefetch.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  assert(!doc.querySelector('link[rel="prefetch"]'));
+  assert(!doc.querySelector('link[rel="prerender"]'));
+}
+
+/**
+ * Check if option works
+ *
  * capture.base
  */
 async function test_capture_base() {
@@ -6265,6 +6501,141 @@ async function test_capture_base() {
  * capture.formStatus
  */
 async function test_capture_formStatus() {
+  /* capture.formStatus = save-all */
+  var options = {
+    "capture.formStatus": "save-all",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_form/form-status.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(!doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[0].getAttribute('data-scrapbook-input-checked') === 'true');
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[3].getAttribute('data-scrapbook-input-checked') === 'false');
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[0].getAttribute('data-scrapbook-input-checked') === 'true');
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[3].getAttribute('data-scrapbook-input-checked') === 'false');
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(!doc.querySelector('input[type="text"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="text"]').getAttribute('data-scrapbook-input-value') === "myname");
+  assert(!doc.querySelector('input[type="password"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="password"]').getAttribute('data-scrapbook-input-value') === "mypassword");
+  assert(!doc.querySelector('input[type="number"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="number"]').getAttribute('data-scrapbook-input-value') === "3");
+  assert(!doc.querySelector('input[type="search"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="search"]').getAttribute('data-scrapbook-input-value') === "search input");
+  assert(!doc.querySelector('input[type="color"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="color"]').hasAttribute('data-scrapbook-input-value'));
+  assert(!doc.querySelector('input[type="range"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="range"]').hasAttribute('data-scrapbook-input-value'));
+  assert(doc.querySelector('textarea').textContent === "");
+  assert(doc.querySelector('textarea').getAttribute('data-scrapbook-textarea-value') === "textarea input");
+  assert(!doc.querySelectorAll('option')[0].hasAttribute('selected'));
+  assert(doc.querySelectorAll('option')[0].getAttribute('data-scrapbook-option-selected') === "true");
+  assert(doc.querySelectorAll('option')[1].hasAttribute('selected'));
+  assert(doc.querySelectorAll('option')[1].getAttribute('data-scrapbook-option-selected') === "false");
+
+  /* capture.formStatus = save */
+  var options = {
+    "capture.formStatus": "save",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_form/form-status.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(!doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[0].getAttribute('data-scrapbook-input-checked') === 'true');
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[3].getAttribute('data-scrapbook-input-checked') === 'false');
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[0].getAttribute('data-scrapbook-input-checked') === 'true');
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[3].getAttribute('data-scrapbook-input-checked') === 'false');
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(!doc.querySelector('input[type="text"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="text"]').getAttribute('data-scrapbook-input-value') === "myname");
+  assert(!doc.querySelector('input[type="password"]').hasAttribute('value'));
+  assert(!doc.querySelector('input[type="password"]').hasAttribute('data-scrapbook-input-value'));
+  assert(!doc.querySelector('input[type="number"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="number"]').getAttribute('data-scrapbook-input-value') === "3");
+  assert(!doc.querySelector('input[type="search"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="search"]').getAttribute('data-scrapbook-input-value') === "search input");
+  assert(!doc.querySelector('input[type="color"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="color"]').hasAttribute('data-scrapbook-input-value'));
+  assert(!doc.querySelector('input[type="range"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="range"]').hasAttribute('data-scrapbook-input-value'));
+  assert(doc.querySelector('textarea').textContent === "");
+  assert(doc.querySelector('textarea').getAttribute('data-scrapbook-textarea-value') === "textarea input");
+  assert(!doc.querySelectorAll('option')[0].hasAttribute('selected'));
+  assert(doc.querySelectorAll('option')[0].getAttribute('data-scrapbook-option-selected') === "true");
+  assert(doc.querySelectorAll('option')[1].hasAttribute('selected'));
+  assert(doc.querySelectorAll('option')[1].getAttribute('data-scrapbook-option-selected') === "false");
+
+  /* capture.formStatus = keep-all */
+  var options = {
+    "capture.formStatus": "keep-all",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_form/form-status.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(doc.querySelector('input[type="text"]').getAttribute('value') === "myname");
+  assert(doc.querySelector('input[type="password"]').getAttribute('value') === "mypassword");
+  assert(doc.querySelector('input[type="number"]').getAttribute('value') === "3");
+  assert(doc.querySelector('input[type="search"]').getAttribute('value') === "search input");
+  assert(doc.querySelector('input[type="color"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="range"]').hasAttribute('value'));
+  assert(doc.querySelector('textarea').textContent === "textarea input");
+  assert(doc.querySelectorAll('option')[0].hasAttribute('selected'));
+  assert(!doc.querySelectorAll('option')[1].hasAttribute('selected'));
+
   /* capture.formStatus = keep */
   var options = {
     "capture.formStatus": "keep",
@@ -6273,20 +6644,87 @@ async function test_capture_formStatus() {
     url: `${localhost}/capture_form/form-status.html`,
     options: Object.assign({}, baseOptions, options),
   });
-
   var zip = await new JSZip().loadAsync(blob);
-
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
+
   assert(doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
   assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
   assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
   assert(doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
   assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
   assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
-  assert(doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
-  assert(doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(doc.querySelector('input[type="text"]').getAttribute('value') === "myname");
+  assert(!doc.querySelector('input[type="password"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="number"]').getAttribute('value') === "3");
+  assert(doc.querySelector('input[type="search"]').getAttribute('value') === "search input");
+  assert(doc.querySelector('input[type="color"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="range"]').hasAttribute('value'));
+  assert(doc.querySelector('textarea').textContent === "textarea input");
+  assert(doc.querySelectorAll('option')[0].hasAttribute('selected'));
+  assert(!doc.querySelectorAll('option')[1].hasAttribute('selected'));
+
+  /* capture.formStatus = html-all */
+  var options = {
+    "capture.formStatus": "html-all",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_form/form-status.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
+  assert(doc.querySelector('input[type="text"]').getAttribute('value') === "myname");
+  assert(doc.querySelector('input[type="password"]').getAttribute('value') === "mypassword");
+  assert(doc.querySelector('input[type="number"]').getAttribute('value') === "3");
+  assert(doc.querySelector('input[type="search"]').getAttribute('value') === "search input");
+  assert(doc.querySelector('input[type="color"]').hasAttribute('value'));
+  assert(doc.querySelector('input[type="range"]').hasAttribute('value'));
+  assert(doc.querySelector('textarea').textContent === "textarea input");
+  assert(doc.querySelectorAll('option')[0].hasAttribute('selected'));
+  assert(!doc.querySelectorAll('option')[1].hasAttribute('selected'));
+
+  /* capture.formStatus = html */
+  var options = {
+    "capture.formStatus": "html",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_form/form-status.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="radio"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[0].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[1].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[2].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[3].hasAttribute('checked'));
+  assert(doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('checked'));
+  assert(!doc.querySelectorAll('input[type="checkbox"]')[4].hasAttribute('data-scrapbook-input-indeterminate'));
   assert(doc.querySelector('input[type="text"]').getAttribute('value') === "myname");
   assert(!doc.querySelector('input[type="password"]').hasAttribute('value'));
   assert(doc.querySelector('input[type="number"]').getAttribute('value') === "3");
@@ -6305,12 +6743,11 @@ async function test_capture_formStatus() {
     url: `${localhost}/capture_form/form-status.html`,
     options: Object.assign({}, baseOptions, options),
   });
-
   var zip = await new JSZip().loadAsync(blob);
-
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
+
   assert(!doc.querySelectorAll('input[type="radio"]')[0].hasAttribute('checked'));
   assert(!doc.querySelectorAll('input[type="radio"]')[1].hasAttribute('checked'));
   assert(doc.querySelectorAll('input[type="radio"]')[2].hasAttribute('checked'));
@@ -6331,7 +6768,7 @@ async function test_capture_formStatus() {
 }
 
 /**
- * Check if shadowRoots (possibly nested) can be captured correctly.
+ * Check if shadow DOMs (possibly nested) can be captured correctly.
  *
  * capturer.captureDocument
  */
@@ -6358,13 +6795,13 @@ async function test_capture_shadowRoot() {
 
   var host1 = doc.querySelector('div');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('img').getAttribute('src') === `green.bmp`);
 
   var host2 = shadow1.querySelector('p');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host2.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host2.getAttribute("data-scrapbook-shadowdom");
   var shadow2 = frag.content;
   assert(shadow2.querySelector('img').getAttribute('src') === `blue.bmp`);
 
@@ -6396,7 +6833,7 @@ async function test_capture_shadowRoot() {
 }
 
 /**
- * Check for shadowRoot auto-generated via custom elements.
+ * Check for shadow DOM auto-generated via custom elements.
  *
  * capturer.captureDocument
  */
@@ -6423,7 +6860,7 @@ async function test_capture_shadowRoot2() {
 
   var host1 = doc.querySelector('custom-elem');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host1.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host1.getAttribute("data-scrapbook-shadowdom");
   var shadow1 = frag.content;
   assert(shadow1.querySelector('img').getAttribute('src') === `green.bmp`);
 
@@ -7248,7 +7685,10 @@ async function test_capture_downLink04() {
   var sitemapFile = zip.file('index.json');
   var sitemapBlob = new Blob([await sitemapFile.async('blob')], {type: "application/json"});
   var expectedData = {
-    "version": 1,
+    "version": 2,
+    "indexPages": [
+      "index.html"
+    ],
     "files": [
       {
         "path": "index.json"
@@ -7260,22 +7700,23 @@ async function test_capture_downLink04() {
         "path": "index.rdf"
       },
       {
+        "path": "history.rdf"
+      },
+      {
         "path": "^metadata^"
       },
       {
         "path": "index.html",
         "url": `${localhost}/capture_downLink2/in-depth.html`,
         "role": "document",
-        "primary": true
+        "token": "43ed95c190934482c9d2e9c6c9843389aa5dd8a9"
       },
       {
         "path": "index.xhtml",
-        "url": "about:blank",
         "role": "document"
       },
       {
         "path": "index.svg",
-        "url": "about:blank",
         "role": "document"
       }
     ]
@@ -7340,7 +7781,10 @@ async function test_capture_downLink04() {
   var sitemapFile = zip.file('index.json');
   var sitemapBlob = new Blob([await sitemapFile.async('blob')], {type: "application/json"});
   var expectedData = {
-    "version": 1,
+    "version": 2,
+    "indexPages": [
+      "index.html"
+    ],
     "files": [
       {
         "path": "index.json"
@@ -7352,53 +7796,54 @@ async function test_capture_downLink04() {
         "path": "index.rdf"
       },
       {
+        "path": "history.rdf"
+      },
+      {
         "path": "^metadata^"
       },
       {
         "path": "index.html",
         "url": `${localhost}/capture_downLink2/in-depth.html`,
         "role": "document",
-        "primary": true
+        "token": "43ed95c190934482c9d2e9c6c9843389aa5dd8a9"
       },
       {
         "path": "index.xhtml",
-        "url": "about:blank",
         "role": "document"
       },
       {
         "path": "index.svg",
-        "url": "about:blank",
         "role": "document"
       },
       {
         "path": "linked1-1.html",
         "url": `${localhost}/capture_downLink2/linked1-1.html`,
         "role": "document",
-        "primary": true
+        "token": "f174e5b40ed6d6625cdc96cc4d303d90d2334f23"
       },
       {
         "path": "linked1-2.html",
         "url": `${localhost}/capture_downLink2/linked1-2.html`,
         "role": "document",
-        "primary": true
+        "token": "3e0df29c7ae372d83faf18d1d6eccaddb5a067b4"
       },
       {
         "path": "linked1-3.html",
         "url": `${localhost}/capture_downLink2/linked1-3.html`,
         "role": "document",
-        "primary": true
+        "token": "d1829b8fee028fc6c556d002f8292db5bab3fb3c"
       },
       {
         "path": "linked1-4.html",
         "url": `${localhost}/capture_downLink2/linked1-4.html`,
         "role": "document",
-        "primary": true
+        "token": "9b3e5bb43f8f839cd7014edc6820091decdc21ef"
       },
       {
         "path": "linked1-5.html",
         "url": `${localhost}/capture_downLink2/linked1-5.html`,
         "role": "document",
-        "primary": true
+        "token": "02279cec1f4a7bc19eafbeab953d782ab8848a8a"
       }
     ]
   };
@@ -7468,7 +7913,10 @@ async function test_capture_downLink04() {
   var sitemapFile = zip.file('index.json');
   var sitemapBlob = new Blob([await sitemapFile.async('blob')], {type: "application/json"});
   var expectedData = {
-    "version": 1,
+    "version": 2,
+    "indexPages": [
+      "index.html"
+    ],
     "files": [
       {
         "path": "index.json"
@@ -7480,65 +7928,66 @@ async function test_capture_downLink04() {
         "path": "index.rdf"
       },
       {
+        "path": "history.rdf"
+      },
+      {
         "path": "^metadata^"
       },
       {
         "path": "index.html",
         "url": `${localhost}/capture_downLink2/in-depth.html`,
         "role": "document",
-        "primary": true
+        "token": "43ed95c190934482c9d2e9c6c9843389aa5dd8a9"
       },
       {
         "path": "index.xhtml",
-        "url": "about:blank",
         "role": "document"
       },
       {
         "path": "index.svg",
-        "url": "about:blank",
         "role": "document"
       },
       {
         "path": "linked1-1.html",
         "url": `${localhost}/capture_downLink2/linked1-1.html`,
         "role": "document",
-        "primary": true
+        "token": "f174e5b40ed6d6625cdc96cc4d303d90d2334f23"
       },
       {
         "path": "linked1-2.html",
         "url": `${localhost}/capture_downLink2/linked1-2.html`,
         "role": "document",
-        "primary": true
+        "token": "3e0df29c7ae372d83faf18d1d6eccaddb5a067b4"
       },
       {
         "path": "linked1-3.html",
         "url": `${localhost}/capture_downLink2/linked1-3.html`,
         "role": "document",
-        "primary": true
+        "token": "d1829b8fee028fc6c556d002f8292db5bab3fb3c"
       },
       {
         "path": "linked1-4.html",
         "url": `${localhost}/capture_downLink2/linked1-4.html`,
         "role": "document",
-        "primary": true
+        "token": "9b3e5bb43f8f839cd7014edc6820091decdc21ef"
       },
       {
         "path": "linked1-5.html",
         "url": `${localhost}/capture_downLink2/linked1-5.html`,
         "role": "document",
-        "primary": true
+        "token": "02279cec1f4a7bc19eafbeab953d782ab8848a8a"
       },
       {
         "path": "linked2-1.html",
         "url": `${localhost}/capture_downLink2/linked2-1.html`,
         "role": "document",
-        "primary": true
+        "token": "ba8d72438189a5c55c2b9a65ca8fec4d3b352271"
       },
       {
         "path": "linked2-2.html",
         "url": `${localhost}/capture_downLink2/linked2-2.html`,
         "role": "document",
-        "primary": true
+        "token": "404c6de9eb35633a65170a9164e177be3d311901"
       }
     ]
   };
@@ -7893,7 +8342,7 @@ async function test_capture_downLink10() {
 }
 
 /**
- * Check links in shadow roots are rebuilt
+ * Check links in shadow DOMs are rebuilt
  *
  * capture.downLink.doc.depth
  */
@@ -7915,15 +8364,130 @@ async function test_capture_downLink11() {
 
   var host = doc.querySelector('div');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host.getAttribute("data-scrapbook-shadowdom");
   var shadow = frag.content;
   assert(shadow.querySelectorAll('a')[0].getAttribute('href') === `linked1.html#111`);
 
   var host = shadow.querySelector('div');
   var frag = doc.createElement("template");
-  frag.innerHTML = JSON.parse(host.getAttribute("data-scrapbook-shadowroot")).data;
+  frag.innerHTML = host.getAttribute("data-scrapbook-shadowdom");
   var shadow = frag.content;
   assert(shadow.querySelectorAll('a')[0].getAttribute('href') === `linked2.html#222`);
+}
+
+/**
+ * Check links rewrite for meta refresh and redirect
+ *
+ * capture.downLink.doc.depth
+ */
+async function test_capture_downLink12() {
+  var options = {
+    "capture.downLink.doc.depth": 1,
+  };
+
+  /* meta refresh */
+  var blob = await capture({
+    url: `${localhost}/capture_downLink7/in-depth.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  assert(doc.querySelectorAll('a')[0].getAttribute('href') === `refreshed.html#linked2-1`);
+  assert(doc.querySelectorAll('a')[1].getAttribute('href') === `${localhost}/capture_downLink7/linked1-2.html#in-depth`);
+
+  /* redirect */
+  var blob = await capture({
+    url: `${localhost}/capture_downLink8/in-depth.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  assert(doc.querySelectorAll('a')[0].getAttribute('href') === `redirected.html#in-depth`);
+  assert(doc.querySelectorAll('a')[1].getAttribute('href') === `${localhost}/capture_downLink8/linked1-2.pyr#in-depth`);
+}
+
+/**
+ * Check URL for data: in index.json
+ *
+ * capture.downLink.doc.depth
+ */
+async function test_capture_downLink13() {
+  var options = {
+    "capture.downLink.doc.depth": 1,
+    "capture.saveDataUriAsFile": true,
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_downLink9/in-depth.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+
+  var zip = await new JSZip().loadAsync(blob);
+
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+  assert(doc.querySelectorAll('img')[0].getAttribute('src') === `dbc82be549e49d6db9a5719086722a4f1c5079cd.bmp`);
+  assert(doc.querySelectorAll('img')[1].getAttribute('src') === `test.bmp`);
+
+  var sitemapFile = zip.file('index.json');
+  var sitemapBlob = new Blob([await sitemapFile.async('blob')], {type: "application/json"});
+  var expectedData = {
+    "version": 2,
+    "indexPages": [
+      "index.html"
+    ],
+    "files": [
+      {
+        "path": "index.json"
+      },
+      {
+        "path": "index.dat"
+      },
+      {
+        "path": "index.rdf"
+      },
+      {
+        "path": "history.rdf"
+      },
+      {
+        "path": "^metadata^"
+      },
+      {
+        "path": "index.html",
+        "url": `${localhost}/capture_downLink9/in-depth.html`,
+        "role": "document",
+        "token": "62d1916b2e5f61142c5bb1cf2d337f06c7159237"
+      },
+      {
+        "path": "index.xhtml",
+        "role": "document"
+      },
+      {
+        "path": "index.svg",
+        "role": "document"
+      },
+      {
+       "path": "dbc82be549e49d6db9a5719086722a4f1c5079cd.bmp",
+       "role": "resource",
+       "token": "53724543b9eec02e09e333bf253affae8bbf71d4"
+      },
+      {
+       "path": "test.bmp",
+       "role": "resource",
+       "token": "273f4b77f14df7c6f331c0cd1ee01746e41797e7"
+      }
+    ]
+  };
+  assert(await readFileAsText(sitemapBlob) === JSON.stringify(expectedData, null, 1));
 }
 
 /**
@@ -7945,21 +8509,21 @@ async function test_capture_metaRefresh() {
 
   var mrs = doc.querySelectorAll('meta[http-equiv="refresh"]');
   assert(mrs[0].getAttribute('content') === `30`);
-  assert(mrs[1].getAttribute('content') === `30;url=#`);
-  assert(mrs[2].getAttribute('content') === `30;url=#123`);
-  assert(mrs[3].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh/delayed.html?id=123`);
+  assert(mrs[1].getAttribute('content') === `30; url=#`);
+  assert(mrs[2].getAttribute('content') === `30; url=#123`);
+  assert(mrs[3].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh/delayed.html?id=123`);
   assert(mrs[4].getAttribute('content') === `30`);
-  assert(mrs[5].getAttribute('content') === `30;url=#`);
-  assert(mrs[6].getAttribute('content') === `30;url=#123`);
-  assert(mrs[7].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh/delayed.html?id=123`);
-  assert(mrs[8].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh/referred.html`);
-  assert(mrs[9].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh/referred.html#`);
-  assert(mrs[10].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh/referred.html#123`);
-  assert(mrs[11].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh/referred.html?id=123`);
-  assert(mrs[12].getAttribute('content') === `15;url=http://example.com/`);
-  assert(mrs[13].getAttribute('content') === `15;url=http://example.com/#`);
-  assert(mrs[14].getAttribute('content') === `15;url=http://example.com/#123`);
-  assert(mrs[15].getAttribute('content') === `15;url=http://example.com/?id=123`);
+  assert(mrs[5].getAttribute('content') === `30; url=#`);
+  assert(mrs[6].getAttribute('content') === `30; url=#123`);
+  assert(mrs[7].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh/delayed.html?id=123`);
+  assert(mrs[8].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh/referred.html`);
+  assert(mrs[9].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh/referred.html#`);
+  assert(mrs[10].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh/referred.html#123`);
+  assert(mrs[11].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh/referred.html?id=123`);
+  assert(mrs[12].getAttribute('content') === `15; url=http://example.com/`);
+  assert(mrs[13].getAttribute('content') === `15; url=http://example.com/#`);
+  assert(mrs[14].getAttribute('content') === `15; url=http://example.com/#123`);
+  assert(mrs[15].getAttribute('content') === `15; url=http://example.com/?id=123`);
 }
 
 /**
@@ -7983,13 +8547,13 @@ async function test_capture_metaRefresh2() {
 
   var mrs = doc.querySelectorAll('meta[http-equiv="refresh"]');
   assert(mrs[0].getAttribute('content') === `30`);
-  assert(mrs[1].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed21.html#123`);
-  assert(mrs[2].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed21.html?id=123`);
+  assert(mrs[1].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed21.html#123`);
+  assert(mrs[2].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed21.html?id=123`);
   assert(mrs[3].getAttribute('content') === `30`);
-  assert(mrs[4].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed21.html#123`);
-  assert(mrs[5].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed21.html?id=123`);
-  assert(mrs[6].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh2/referred.html`);
-  assert(mrs[7].getAttribute('content') === `15;url=http://example.com/`);
+  assert(mrs[4].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed21.html#123`);
+  assert(mrs[5].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed21.html?id=123`);
+  assert(mrs[6].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh2/referred.html`);
+  assert(mrs[7].getAttribute('content') === `15; url=http://example.com/`);
 
   /* refresh link target captured */
   var blob = await capture({
@@ -8005,13 +8569,13 @@ async function test_capture_metaRefresh2() {
 
   var mrs = doc.querySelectorAll('meta[http-equiv="refresh"]');
   assert(mrs[0].getAttribute('content') === `30`);
-  assert(mrs[1].getAttribute('content') === `30;url=#123`);
-  assert(mrs[2].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed22.html?id=123`);
+  assert(mrs[1].getAttribute('content') === `30; url=#123`);
+  assert(mrs[2].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed22.html?id=123`);
   assert(mrs[3].getAttribute('content') === `30`);
-  assert(mrs[4].getAttribute('content') === `30;url=#123`);
-  assert(mrs[5].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh2/delayed22.html?id=123`);
-  assert(mrs[6].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh2/referred.html`);
-  assert(mrs[7].getAttribute('content') === `15;url=http://example.com/`);
+  assert(mrs[4].getAttribute('content') === `30; url=#123`);
+  assert(mrs[5].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh2/delayed22.html?id=123`);
+  assert(mrs[6].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh2/referred.html`);
+  assert(mrs[7].getAttribute('content') === `15; url=http://example.com/`);
 }
 
 /**
@@ -8033,16 +8597,16 @@ async function test_capture_metaRefresh3() {
 
   var mrs = doc.querySelectorAll('meta[http-equiv="refresh"]');
   assert(mrs[0].getAttribute('content') === `30`);
-  assert(mrs[1].getAttribute('content') === `30;url=#`);
-  assert(mrs[2].getAttribute('content') === `30;url=#123`);
-  assert(mrs[3].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh3/delayed3.html?id=123`);
+  assert(mrs[1].getAttribute('content') === `30; url=#`);
+  assert(mrs[2].getAttribute('content') === `30; url=#123`);
+  assert(mrs[3].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh3/delayed3.html?id=123`);
   assert(mrs[4].getAttribute('content') === `30`);
-  assert(mrs[5].getAttribute('content') === `30;url=#`);
-  assert(mrs[6].getAttribute('content') === `30;url=#123`);
-  assert(mrs[7].getAttribute('content') === `30;url=${localhost}/capture_metaRefresh3/delayed3.html?id=123`);
-  assert(mrs[8].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh3/referred.html`);
-  assert(mrs[9].getAttribute('content') === `20;url=${localhost}/capture_metaRefresh3/subdir/referred.html`);
-  assert(mrs[10].getAttribute('content') === `15;url=http://example.com/`);
+  assert(mrs[5].getAttribute('content') === `30; url=#`);
+  assert(mrs[6].getAttribute('content') === `30; url=#123`);
+  assert(mrs[7].getAttribute('content') === `30; url=${localhost}/capture_metaRefresh3/delayed3.html?id=123`);
+  assert(mrs[8].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh3/referred.html`);
+  assert(mrs[9].getAttribute('content') === `20; url=${localhost}/capture_metaRefresh3/subdir/referred.html`);
+  assert(mrs[10].getAttribute('content') === `15; url=http://example.com/`);
 }
 
 /**
@@ -8144,12 +8708,159 @@ async function test_capture_metaRefresh6() {
 /**
  * Check if option works
  *
- * capture.removeIntegrity
+ * capture.contentSecurityPolicy
+ */
+async function test_capture_contentSecurityPolicy() {
+  /* capture.contentSecurityPolicy = save */
+  var options = {
+    "capture.contentSecurityPolicy": "save",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_contentSecurityPolicy/csp.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelector('meta[http-equiv]').getAttribute('content') === `default-src 'nonce-2726c7f26c';`);
+  assert(doc.querySelector('link').getAttribute('nonce') === `2726c7f26c`);
+  assert(doc.querySelector('style').getAttribute('nonce') === `2726c7f26c`);
+  assert(doc.querySelector('script[src]').getAttribute('nonce') === `2726c7f26c`);
+  assert(doc.querySelector('script:not([src])').getAttribute('nonce') === `2726c7f26c`);
+
+  /* capture.contentSecurityPolicy = remove */
+  var options = {
+    "capture.contentSecurityPolicy": "remove",
+  };
+  var blob = await capture({
+    url: `${localhost}/capture_contentSecurityPolicy/csp.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(!doc.querySelector('meta[http-equiv]'));
+  assert(!doc.querySelector('link').hasAttribute('nonce'));
+  assert(!doc.querySelector('style').hasAttribute('nonce'));
+  assert(!doc.querySelector('script[src]').hasAttribute('nonce'));
+  assert(!doc.querySelector('script:not([src])').hasAttribute('nonce'));
+}
+
+/**
+ * Check handling of crossorigin attribute
+ */
+async function test_capture_crossorigin() {
+  /* save */
+  var options = {
+    "capture.image": "save",
+    "capture.favicon": "save",
+    "capture.audio": "save",
+    "capture.video": "save",
+    "capture.style": "save",
+    "capture.rewriteCss": "url",
+    "capture.script": "save",
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_crossorigin/crossorigin.py`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(!doc.querySelector('link[rel~="stylesheet"]').hasAttribute('crossorigin'));
+  assert(!doc.querySelector('link[rel~="icon"]').hasAttribute('crossorigin'));
+  assert(!doc.querySelector('script').hasAttribute('crossorigin'));
+  assert(!doc.querySelector('img').hasAttribute('crossorigin'));
+  assert(!doc.querySelector('audio').hasAttribute('crossorigin'));
+  assert(!doc.querySelector('video').hasAttribute('crossorigin'));
+
+  /* link */
+  var options = {
+    "capture.image": "link",
+    "capture.favicon": "link",
+    "capture.audio": "link",
+    "capture.video": "link",
+    "capture.style": "link",
+    "capture.script": "link",
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_crossorigin/crossorigin.py`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelector('link[rel~="stylesheet"]').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('link[rel~="icon"]').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('script').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('img').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('audio').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('video').getAttribute('crossorigin') === '');
+
+  /* blank */
+  var options = {
+    "capture.image": "blank",
+    "capture.favicon": "blank",
+    "capture.audio": "blank",
+    "capture.video": "blank",
+    "capture.style": "blank",
+    "capture.script": "blank",
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_crossorigin/crossorigin.py`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(doc.querySelector('link[rel~="stylesheet"]').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('link[rel~="icon"]').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('script').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('img').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('audio').getAttribute('crossorigin') === '');
+  assert(doc.querySelector('video').getAttribute('crossorigin') === '');
+}
+
+/**
+ * Check handling of integrity attribute
  */
 async function test_capture_integrity() {
-  /* +capture.removeIntegrity */
+  /* save */
   var options = {
-    "capture.removeIntegrity": true,
+    "capture.style": "save",
+    "capture.script": "save",
+    "capture.rewriteCss": "url",
+  };
+
+  var blob = await capture({
+    url: `${localhost}/capture_integrity/integrity.html`,
+    options: Object.assign({}, baseOptions, options),
+  });
+  var zip = await new JSZip().loadAsync(blob);
+  var indexFile = zip.file('index.html');
+  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
+  var doc = await readFileAsDocument(indexBlob);
+
+  assert(!doc.querySelector('link').hasAttribute('integrity'));
+  assert(!doc.querySelector('script').hasAttribute('integrity'));
+
+  /* link */
+  var options = {
+    "capture.style": "link",
+    "capture.script": "link",
   };
   var blob = await capture({
     url: `${localhost}/capture_integrity/integrity.html`,
@@ -8160,32 +8871,13 @@ async function test_capture_integrity() {
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
 
-  var link = doc.querySelector('link');
-  assert(!link.hasAttribute('integrity'));
-  assert(!link.hasAttribute('crossorigin'));
-  var script = doc.querySelector('script');
-  assert(!script.hasAttribute('integrity'));
-  assert(!script.hasAttribute('crossorigin'));
+  assert(!doc.querySelector('link').hasAttribute('integrity'));
+  assert(!doc.querySelector('script').hasAttribute('integrity'));
 
-  var blob = await capture({
-    url: `${localhost}/capture_integrity/nonce.html`,
-    options: Object.assign({}, baseOptions, options),
-  });
-  var zip = await new JSZip().loadAsync(blob);
-  var indexFile = zip.file('index.html');
-  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
-  var doc = await readFileAsDocument(indexBlob);
-
-  var meta = doc.querySelectorAll('meta')[1];
-  assert(!meta.hasAttribute('http-equiv'));
-  var link = doc.querySelector('link');
-  assert(!link.hasAttribute('nonce'));
-  var script = doc.querySelector('script');
-  assert(!script.hasAttribute('nonce'));
-
-  /* -capture.removeIntegrity */
+  /* blank */
   var options = {
-    "capture.removeIntegrity": false,
+    "capture.style": "blank",
+    "capture.script": "blank",
   };
   var blob = await capture({
     url: `${localhost}/capture_integrity/integrity.html`,
@@ -8196,28 +8888,8 @@ async function test_capture_integrity() {
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
 
-  var link = doc.querySelector('link');
-  assert(link.hasAttribute('integrity'));
-  assert(link.hasAttribute('crossorigin'));
-  var script = doc.querySelector('script');
-  assert(script.hasAttribute('integrity'));
-  assert(script.hasAttribute('crossorigin'));
-
-  var blob = await capture({
-    url: `${localhost}/capture_integrity/nonce.html`,
-    options: Object.assign({}, baseOptions, options),
-  });
-  var zip = await new JSZip().loadAsync(blob);
-  var indexFile = zip.file('index.html');
-  var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
-  var doc = await readFileAsDocument(indexBlob);
-
-  var meta = doc.querySelectorAll('meta')[1];
-  assert(meta.hasAttribute('http-equiv'));
-  var link = doc.querySelector('link');
-  assert(link.hasAttribute('nonce'));
-  var script = doc.querySelector('script');
-  assert(script.hasAttribute('nonce'));
+  assert(!doc.querySelector('link').hasAttribute('integrity'));
+  assert(!doc.querySelector('script').hasAttribute('integrity'));
 }
 
 /**
@@ -8649,12 +9321,12 @@ async function test_capture_record_meta3() {
 }
 
 /**
- * Check if option works
+ * Check if removed nodes are recorded
  *
  * capture.recordRewrites
  * capturer.captureDocument
  */
-async function test_capture_record_nodes() {
+async function test_capture_record_nodes1() {
   var options = {
     "capture.image": "remove",
     "capture.favicon": "remove",
@@ -8668,6 +9340,8 @@ async function test_capture_record_nodes() {
     "capture.style": "remove",
     "capture.script": "remove",
     "capture.noscript": "remove",
+    "capture.preload": "remove",
+    "capture.prefetch": "remove",
     "capture.base": "remove",
   };
 
@@ -8675,7 +9349,7 @@ async function test_capture_record_nodes() {
   options["capture.recordRewrites"] = true;
 
   var blob = await captureHeadless({
-    url: `${localhost}/capture_record/nodes.html`,
+    url: `${localhost}/capture_record/nodes1.html`,
     mode: "source",
     options: Object.assign({}, baseOptions, options),
   });
@@ -8697,6 +9371,14 @@ async function test_capture_record_nodes() {
 
   assert(new RegExp(
     `<!--scrapbook-orig-node-${timeId}=<link[^>]*? rel="stylesheet"[^>]*?>-->`
+  ).test(head.innerHTML));
+
+  assert(new RegExp(
+    `<!--scrapbook-orig-node-${timeId}=<link[^>]*? rel="preload"[^>]*?>-->`
+  ).test(head.innerHTML));
+
+  assert(new RegExp(
+    `<!--scrapbook-orig-node-${timeId}=<link[^>]*? rel="prefetch"[^>]*?>-->`
   ).test(head.innerHTML));
 
   assert(new RegExp(
@@ -8759,7 +9441,7 @@ async function test_capture_record_nodes() {
   options["capture.recordRewrites"] = false;
 
   var blob = await captureHeadless({
-    url: `${localhost}/capture_record/nodes.html`,
+    url: `${localhost}/capture_record/nodes1.html`,
     mode: "source",
     options: Object.assign({}, baseOptions, options),
   });
@@ -8781,6 +9463,10 @@ async function test_capture_record_nodes() {
 
   assert(!new RegExp(
     `<!--scrapbook-orig-node-${timeId}=<link[^>]*? rel="stylesheet"[^>]*?>-->`
+  ).test(head.innerHTML));
+
+  assert(!new RegExp(
+    `<!--scrapbook-orig-node-${timeId}=<link[^>]*? rel="preload"[^>]*?>-->`
   ).test(head.innerHTML));
 
   assert(!new RegExp(
@@ -8841,7 +9527,7 @@ async function test_capture_record_nodes() {
 }
 
 /**
- * Check handling of removal of source nodes in picture, audio, and video
+ * Check for removed source nodes in picture, audio, and video
  *
  * capture.recordRewrites
  * capturer.captureDocument
@@ -8905,7 +9591,7 @@ async function test_capture_record_nodes2() {
 }
 
 /**
- * Check added nodes are recorded.
+ * Check if added nodes are recorded.
  *
  * capture.recordRewrites
  * capturer.captureDocument
@@ -8973,26 +9659,25 @@ async function test_capture_record_nodes3() {
 }
 
 /**
- * Check if option works
+ * Check if changed attributes are recorded
  *
  * capture.recordRewrites
  * capturer.captureDocument
  */
-async function test_capture_record_attrs() {
+async function test_capture_record_attrs1() {
   var options = {
     "capture.frame": "save",
     "capture.styleInline": "blank",
     "capture.rewriteCss": "url",
     "capture.script": "blank",
     "capture.formStatus": "keep",
-    "capture.removeIntegrity": true,
   };
 
   /* +capture.recordRewrites */
   options["capture.recordRewrites"] = true;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/attrs.html`,
+    url: `${localhost}/capture_record/attrs1.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9003,8 +9688,6 @@ async function test_capture_record_attrs() {
 
   assert(doc.querySelector('meta').getAttribute(`data-scrapbook-orig-attr-charset-${timeId}`) === `Big5`);
   assert(doc.querySelector('meta[content]').getAttribute(`data-scrapbook-orig-attr-content-${timeId}`) === `text/html; charset=Big5`);
-  assert(doc.querySelector('script').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-FDJ1FZczv9rCdgEzfJCWGhlAqb9kOUFZoNu99URFDlg=`);
-  assert(doc.querySelector('script').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === `anonymous`);
   assert(doc.querySelector('body').getAttribute(`data-scrapbook-orig-attr-onload-${timeId}`) === `console.log('load');`);
   assert(doc.querySelector('div').getAttribute(`data-scrapbook-orig-attr-style-${timeId}`) === `background-color: green;`);
   assert(doc.querySelector('iframe').getAttribute(`data-scrapbook-orig-attr-srcdoc-${timeId}`) === `frame page content`);
@@ -9018,7 +9701,7 @@ async function test_capture_record_attrs() {
   options["capture.recordRewrites"] = false;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/attrs.html`,
+    url: `${localhost}/capture_record/attrs1.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9029,8 +9712,6 @@ async function test_capture_record_attrs() {
 
   assert(!doc.querySelector('meta').hasAttribute(`data-scrapbook-orig-attr-charset-${timeId}`));
   assert(!doc.querySelector('meta[content]').hasAttribute(`data-scrapbook-orig-attr-content-${timeId}`));
-  assert(!doc.querySelector('script').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
-  assert(!doc.querySelector('script').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('body').hasAttribute(`data-scrapbook-orig-attr-onload-${timeId}`));
   assert(!doc.querySelector('div').hasAttribute(`data-scrapbook-orig-attr-style-${timeId}`));
   assert(!doc.querySelector('iframe').hasAttribute(`data-scrapbook-orig-attr-srcdoc-${timeId}`));
@@ -9042,13 +9723,13 @@ async function test_capture_record_attrs() {
 }
 
 /**
- * Check if option works: save cases
+ * Check for changed attributes: save case
  *
  * capture.recordRewrites
  * capturer.captureDocument
  * capturer.DocumentCssHandler
  */
-async function test_capture_record_urls() {
+async function test_capture_record_attrs2() {
   var options = {
     "capture.image": "save",
     "capture.imageBackground": "save",
@@ -9064,16 +9745,19 @@ async function test_capture_record_urls() {
     "capture.styleInline": "save",
     "capture.rewriteCss": "url",
     "capture.script": "save",
+    "capture.preload": "blank",
+    "capture.prefetch": "blank",
     "capture.downLink.file.mode": "url",
     "capture.downLink.file.extFilter": "txt",
     "capture.downLink.urlFilter": "",
+    "capture.contentSecurityPolicy": "remove",
   };
 
   /* +capture.recordRewrites */
   options["capture.recordRewrites"] = true;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9084,22 +9768,46 @@ async function test_capture_record_urls() {
 
   // attr
   assert(doc.querySelector('link[rel="preload"]').getAttribute(`data-scrapbook-orig-attr-href-${timeId}`) === `./null.css`);
+  assert(doc.querySelector('link[rel="preload"]').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(!doc.querySelector('link[rel="preload"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(doc.querySelector('link[rel="preload"]').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`);
+  assert(doc.querySelector('link[rel="prefetch"]').getAttribute(`data-scrapbook-orig-attr-href-${timeId}`) === `./null2.css`);
+  assert(doc.querySelector('link[rel="prefetch"]').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(!doc.querySelector('link[rel="prefetch"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(doc.querySelector('link[rel="preload"]').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`);
   assert(doc.querySelector('link[rel~="icon"]').getAttribute(`data-scrapbook-orig-attr-href-${timeId}`) === `./null.bmp`);
+  assert(doc.querySelector('link[rel~="icon"]').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(doc.querySelector('link[rel~="icon"]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === `anonymous`);
+  assert(doc.querySelector('link[rel~="icon"]').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`);
   assert(doc.querySelector('link[rel="stylesheet"]').getAttribute(`data-scrapbook-orig-attr-href-${timeId}`) === `./null.css`);
-  assert(doc.querySelector('script').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.js`);
+  assert(doc.querySelector('link[rel="stylesheet"]').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(doc.querySelector('link[rel="stylesheet"]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
+  assert(doc.querySelector('link[rel="stylesheet"]').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`);
+  assert(doc.querySelector('script[src]').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.js`);
+  assert(doc.querySelector('script[src]').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(doc.querySelector('script[src]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === `use-credentials`);
+  assert(doc.querySelector('script[src]').getAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`) === `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`);
+  assert(doc.querySelector('script:not([src])').getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
   assert(doc.querySelector('img').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.bmp`);
+  assert(doc.querySelector('img').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
   assert(doc.querySelector('img[srcset]').getAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`) === `./null.bmp 1x, ./null.bmp 2x`);
+  assert(doc.querySelector('img[srcset]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
   assert(doc.querySelector('picture source').getAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('picture img').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.bmp`);
+  assert(doc.querySelector('picture img').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
   assert(doc.querySelector('input[type="image"]').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('table').getAttribute(`data-scrapbook-orig-attr-background-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('table tr').getAttribute(`data-scrapbook-orig-attr-background-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('table tr th').getAttribute(`data-scrapbook-orig-attr-background-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('table tr td').getAttribute(`data-scrapbook-orig-attr-background-${timeId}`) === `./null.bmp`);
   assert(doc.querySelector('audio[src]').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.mp3`);
+  assert(doc.querySelector('audio[src]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
+  assert(doc.querySelector('audio:not([src])').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
   assert(doc.querySelector('audio source').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.ogg`);
   assert(doc.querySelector('video[src]').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.mp4`);
   assert(doc.querySelector('video[src]').getAttribute(`data-scrapbook-orig-attr-poster-${timeId}`) === `./null.bmp`);
+  assert(doc.querySelector('video[src]').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
+  assert(doc.querySelector('video:not([src])').getAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`) === ``);
   assert(doc.querySelector('video source').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.webm`);
   assert(doc.querySelector('iframe').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.html`);
   assert(doc.querySelector('embed').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.swf`);
@@ -9123,7 +9831,7 @@ p { background-image: /*scrapbook-orig-url="./null.bmp"*/url("null.bmp"); }`);
   options["capture.recordRewrites"] = false;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9134,22 +9842,46 @@ p { background-image: /*scrapbook-orig-url="./null.bmp"*/url("null.bmp"); }`);
 
   // attr
   assert(!doc.querySelector('link[rel="preload"]').hasAttribute(`data-scrapbook-orig-attr-href-${timeId}`));
+  assert(!doc.querySelector('link[rel="preload"]').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelector('link[rel="preload"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('link[rel="preload"]').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
+  assert(!doc.querySelector('link[rel="prefetch"]').hasAttribute(`data-scrapbook-orig-attr-href-${timeId}`));
+  assert(!doc.querySelector('link[rel="prefetch"]').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelector('link[rel="prefetch"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('link[rel="prefetch"]').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
   assert(!doc.querySelector('link[rel~="icon"]').hasAttribute(`data-scrapbook-orig-attr-href-${timeId}`));
+  assert(!doc.querySelector('link[rel~="icon"]').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelector('link[rel~="icon"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('link[rel~="icon"]').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
   assert(!doc.querySelector('link[rel="stylesheet"]').hasAttribute(`data-scrapbook-orig-attr-href-${timeId}`));
-  assert(!doc.querySelector('script').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelector('link[rel="stylesheet"]').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelector('link[rel="stylesheet"]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('link[rel="stylesheet"]').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
+  assert(!doc.querySelector('script[src]').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelector('script[src]').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelector('script[src]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('script[src]').hasAttribute(`data-scrapbook-orig-attr-integrity-${timeId}`));
+  assert(!doc.querySelector('script:not([src])').hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
   assert(!doc.querySelector('img').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelector('img').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('img[srcset]').hasAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`));
+  assert(!doc.querySelector('img[srcset]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('picture source').hasAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`));
   assert(!doc.querySelector('picture img').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelector('picture img').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('input[type="image"]').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelector('table').hasAttribute(`data-scrapbook-orig-attr-background-${timeId}`));
   assert(!doc.querySelector('table tr').hasAttribute(`data-scrapbook-orig-attr-background-${timeId}`));
   assert(!doc.querySelector('table tr th').hasAttribute(`data-scrapbook-orig-attr-background-${timeId}`));
   assert(!doc.querySelector('table tr td').hasAttribute(`data-scrapbook-orig-attr-background-${timeId}`));
   assert(!doc.querySelector('audio[src]').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelector('audio[src]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('audio:not([src])').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('audio source').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelector('video[src]').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelector('video[src]').hasAttribute(`data-scrapbook-orig-attr-poster-${timeId}`));
+  assert(!doc.querySelector('video[src]').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
+  assert(!doc.querySelector('video:not([src])').hasAttribute(`data-scrapbook-orig-attr-crossorigin-${timeId}`));
   assert(!doc.querySelector('video source').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelector('iframe').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelector('embed').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
@@ -9171,14 +9903,14 @@ p { background-image: url("null.bmp"); }`);
 }
 
 /**
- * Check if option works: blank cases
+ * Check for changed attributes: blank case
  * (save styles to save CSS and check image background and font)
  *
  * capture.recordRewrites
  * capturer.captureDocument
  * capturer.DocumentCssHandler
  */
-async function test_capture_record_urls2() {
+async function test_capture_record_attrs3() {
   var options = {
     "capture.image": "blank",
     "capture.imageBackground": "blank",
@@ -9194,13 +9926,14 @@ async function test_capture_record_urls2() {
     "capture.styleInline": "save",
     "capture.rewriteCss": "url",
     "capture.script": "blank",
+    "capture.contentSecurityPolicy": "remove",
   };
 
   /* +capture.recordRewrites */
   options["capture.recordRewrites"] = true;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9211,7 +9944,10 @@ async function test_capture_record_urls2() {
 
   // attr
   assert(doc.querySelector('link[rel~="icon"]').getAttribute(`data-scrapbook-orig-attr-href-${timeId}`) === `./null.bmp`);
-  assert(doc.querySelector('script').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.js`);
+  assert(doc.querySelectorAll('script')[0].getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.js`);
+  assert(doc.querySelectorAll('script')[0].getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
+  assert(doc.querySelectorAll('script')[1].getAttribute(`data-scrapbook-orig-textContent-${timeId}`).trim() === `console.log('script:not[src]');`);
+  assert(doc.querySelectorAll('script')[1].getAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`) === `2726c7f26c`);
   assert(doc.querySelector('img').getAttribute(`data-scrapbook-orig-attr-src-${timeId}`) === `./null.bmp`);
   assert(doc.querySelectorAll('img')[1].getAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`) === `./null.bmp 1x, ./null.bmp 2x`);
   assert(doc.querySelector('picture source').getAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`) === `./null.bmp`);
@@ -9242,7 +9978,7 @@ p { background-image: /*scrapbook-orig-url="./null.bmp"*/url(""); }`);
   options["capture.recordRewrites"] = false;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9253,7 +9989,10 @@ p { background-image: /*scrapbook-orig-url="./null.bmp"*/url(""); }`);
 
   // attr
   assert(!doc.querySelector('link[rel~="icon"]').hasAttribute(`data-scrapbook-orig-attr-href-${timeId}`));
-  assert(!doc.querySelector('script').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelectorAll('script')[0].hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
+  assert(!doc.querySelectorAll('script')[0].hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
+  assert(!doc.querySelectorAll('script')[1].hasAttribute(`data-scrapbook-orig-textContent-${timeId}`));
+  assert(!doc.querySelectorAll('script')[1].hasAttribute(`data-scrapbook-orig-attr-nonce-${timeId}`));
   assert(!doc.querySelector('img').hasAttribute(`data-scrapbook-orig-attr-src-${timeId}`));
   assert(!doc.querySelectorAll('img')[1].hasAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`));
   assert(!doc.querySelector('picture source').hasAttribute(`data-scrapbook-orig-attr-srcset-${timeId}`));
@@ -9282,14 +10021,14 @@ p { background-image: url(""); }`);
 }
 
 /**
- * Check if option works: save-current cases
+ * Check for changed attributes: save-current case
  * (and blank style)
  *
  * capture.recordRewrites
  * capturer.captureDocument
  * capturer.DocumentCssHandler
  */
-async function test_capture_record_urls3() {
+async function test_capture_record_attrs4() {
   var options = {
     "capture.image": "save-current",
     "capture.audio": "save-current",
@@ -9301,7 +10040,7 @@ async function test_capture_record_urls3() {
   options["capture.recordRewrites"] = true;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9324,11 +10063,11 @@ async function test_capture_record_urls3() {
   assert(doc.querySelectorAll('video')[1].getAttribute(`data-scrapbook-orig-null-attr-src-${timeId}`) === ``);
   assert(!doc.querySelectorAll('video')[1].getAttribute(`data-scrapbook-orig-attr-src-${timeId}`)); // double record bug
 
-  /* +capture.recordRewrites */
+  /* -capture.recordRewrites */
   options["capture.recordRewrites"] = false;
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls.html`,
+    url: `${localhost}/capture_record/attrs2.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9354,13 +10093,13 @@ async function test_capture_record_urls3() {
 }
 
 /**
- * Check if option works: for base
+ * Check for changed attributes: for base
  *
  * capture.recordRewrites
  * capturer.captureDocument
  * capturer.DocumentCssHandler
  */
-async function test_capture_record_urls4() {
+async function test_capture_record_attrs5() {
   var options = {
     "capture.recordRewrites": true,
   };
@@ -9369,7 +10108,7 @@ async function test_capture_record_urls4() {
   options["capture.base"] = "save";
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls2.html`,
+    url: `${localhost}/capture_record/attrs3.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9384,7 +10123,7 @@ async function test_capture_record_urls4() {
   options["capture.base"] = "blank";
 
   var blob = await capture({
-    url: `${localhost}/capture_record/urls2.html`,
+    url: `${localhost}/capture_record/attrs3.html`,
     options: Object.assign({}, baseOptions, options),
   });
   var zip = await new JSZip().loadAsync(blob);
@@ -9850,17 +10589,22 @@ async function test_capture_svg() {
   var zip = await new JSZip().loadAsync(blob);
   assert(zip.files["index.html"]);
   assert(zip.files["green.bmp"]);
+  assert(zip.files["blue.bmp"]);
+  assert(zip.files["script.js"]);
+  assert(zip.files["script2.js"]);
 
   var indexFile = zip.file('index.html');
   var indexBlob = new Blob([await indexFile.async('blob')], {type: "text/html"});
   var doc = await readFileAsDocument(indexBlob);
 
   assert(doc.querySelectorAll('svg a')[0].getAttribute('href') === `${localhost}/capture_svg/resources/green.bmp`);
-  assert(doc.querySelectorAll('svg a')[1].getAttribute('xlink:href') === `${localhost}/capture_svg/resources/green.bmp`);
+  assert(doc.querySelectorAll('svg a')[1].getAttribute('xlink:href') === `${localhost}/capture_svg/resources/blue.bmp`);
   assert(doc.querySelectorAll('svg image')[0].getAttribute('href') === `green.bmp`);
-  assert(doc.querySelectorAll('svg image')[1].getAttribute('xlink:href') === `green.bmp`);
+  assert(doc.querySelectorAll('svg image')[1].getAttribute('xlink:href') === `blue.bmp`);
   assert(doc.querySelectorAll('svg use')[0].getAttribute('href') === `#img1`);
   assert(doc.querySelectorAll('svg use')[1].getAttribute('xlink:href') === `#img2`);
+  assert(doc.querySelectorAll('svg script')[0].getAttribute('href') === `script.js`);
+  assert(doc.querySelectorAll('svg script')[1].getAttribute('xlink:href') === `script2.js`);
 
   /* external.svg */
   var options = {
@@ -9882,11 +10626,13 @@ async function test_capture_svg() {
   var doc = await readFileAsDocument(indexBlob);
 
   assert(doc.querySelectorAll('svg a')[0].getAttribute('href') === `${localhost}/capture_svg/resources/green.bmp`);
-  assert(doc.querySelectorAll('svg a')[1].getAttribute('xlink:href') === `${localhost}/capture_svg/resources/green.bmp`);
+  assert(doc.querySelectorAll('svg a')[1].getAttribute('xlink:href') === `${localhost}/capture_svg/resources/blue.bmp`);
   assert(doc.querySelectorAll('svg image')[0].getAttribute('href') === `green.bmp`);
-  assert(doc.querySelectorAll('svg image')[1].getAttribute('xlink:href') === `green.bmp`);
+  assert(doc.querySelectorAll('svg image')[1].getAttribute('xlink:href') === `blue.bmp`);
   assert(doc.querySelectorAll('svg use')[0].getAttribute('href') === `#img1`);
   assert(doc.querySelectorAll('svg use')[1].getAttribute('xlink:href') === `#img2`);
+  assert(doc.querySelectorAll('svg script')[0].getAttribute('href') === `script.js`);
+  assert(doc.querySelectorAll('svg script')[1].getAttribute('xlink:href') === `script2.js`);
 }
 
 /**
@@ -10678,9 +11424,42 @@ async function test_viewer_validate() {
   });
 }
 
+async function test_viewer_attachment() {
+  return await openTestTab({
+    url: browser.runtime.getURL('t/viewer-attachment/index.html'),
+    active: true,
+  }, (message, port, resolve) => {
+    if (message.cmd == 'result') {
+      resolve(message.args.value);
+    }
+  });
+}
+
 async function test_viewer_interlink() {
   return await openTestTab({
     url: browser.runtime.getURL('t/viewer-interlink/index.html'),
+    active: true,
+  }, (message, port, resolve) => {
+    if (message.cmd == 'result') {
+      resolve(message.args.value);
+    }
+  });
+}
+
+async function test_viewer_interlink2() {
+  return await openTestTab({
+    url: browser.runtime.getURL('t/viewer-interlink2/index.html'),
+    active: true,
+  }, (message, port, resolve) => {
+    if (message.cmd == 'result') {
+      resolve(message.args.value);
+    }
+  });
+}
+
+async function test_viewer_interlink3() {
+  return await openTestTab({
+    url: browser.runtime.getURL('t/viewer-interlink3/index.html'),
     active: true,
   }, (message, port, resolve) => {
     if (message.cmd == 'result') {

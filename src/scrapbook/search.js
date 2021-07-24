@@ -24,7 +24,15 @@
   'use strict';
 
   class SearchTree extends CustomTree {
-    addItem(item, file) {
+    constructor(params) {
+      super(params);
+      this.markers = params.markers;
+      this.commentLength = params.commentLength;
+      this.contextLength = params.contextLength;
+      this.sourceLength = params.sourceLength;
+    }
+
+    addItem(item, file, fulltext) {
       const elem = super.addItem(item);
 
       const div = elem.controller;
@@ -52,7 +60,10 @@
         }
 
         const span = document.createElement('span');
-        span.textContent = ' (' + file + ')';
+        span.appendChild(document.createTextNode(' ('));
+        const fileNode = span.appendChild(document.createTextNode(file));
+        span.appendChild(document.createTextNode(')'));
+        nodeMarker.markTextNode(fileNode, this.markers.file);
         a.parentNode.insertBefore(span, a.nextSibling);
       }
 
@@ -63,14 +74,158 @@
       img.src = browser.runtime.getURL("resources/edit-locate.svg");
       img.title = scrapbook.lang('SearchLocateTitle');
       img.alt = "";
+
+      // mark title
+      nodeMarker.markTextNode(elem.label, this.markers.title);
+
+      // add details if set
+      if (this.commentLength || this.contextLength || this.sourceLength) {
+        const divDetails = document.createElement('div');
+        divDetails.classList.add('details');
+
+        // comment
+        if (this.commentLength && item.comment) {
+          const text = nodeMarker.cropSnippets(item.comment, this.markers.comment, this.commentLength);
+          const div = divDetails.appendChild(document.createElement('div'));
+          div.classList.add('comment');
+          const commentNode = div.appendChild(document.createTextNode(text));
+          nodeMarker.markTextNode(commentNode, this.markers.comment);
+        }
+
+        // context (fulltext)
+        if (this.contextLength && fulltext) {
+          const text = nodeMarker.cropSnippets(fulltext, this.markers.content, this.contextLength);
+          const div = divDetails.appendChild(document.createElement('div'));
+          div.classList.add('context');
+          const contextNode = div.appendChild(document.createTextNode(text));
+          nodeMarker.markTextNode(contextNode, this.markers.content);
+        }
+
+        // source
+        if (this.sourceLength && item.source) {
+          const text = nodeMarker.cropSnippets(item.source, this.markers.source, this.sourceLength);
+          const div = divDetails.appendChild(document.createElement('div'));
+          div.classList.add('source');
+          const sourceNode = div.appendChild(document.createTextNode(text));
+          nodeMarker.markTextNode(sourceNode, this.markers.source);
+        }
+
+        div.parentNode.appendChild(divDetails);
+      }
     }
   }
+
+  const nodeMarker = {
+    get template() {
+      const value = document.createElement('mark');
+      Object.defineProperty(nodeMarker, 'template', {
+        value,
+        configurable: true,
+      });
+      return value;
+    },
+
+    markTextNode(node, regexes) {
+      regexes = new Set(regexes);
+
+      let curNode = node;
+      let nextNode;
+      let s = curNode.nodeValue;
+      let nextIndex = 0;
+      for (const regex of regexes) {
+        regex.lastIndex = 0;
+      }
+
+      while (true) {
+        let hits = [];
+        for (const regex of regexes) {
+          const m = regex.exec(s);
+          if (!m) {
+            regexes.delete(regex);
+            continue;
+          }
+          const len = m[0].length;
+          const end = regex.lastIndex;
+          const start = regex.lastIndex - len;
+          hits.push({regex, start, len, end});
+        }
+
+        if (!hits.length) { break; }
+
+        const hit = hits.reduce(this.markTextNodeReducer);
+        if (hit.len === 0) {
+          // lastIndex of /(?:)/u decreases from 1 to 0 after exec on '\uD800\uDC00'
+          // also save to nextIndex to ensure increasing for every loop.
+          nextIndex = Math.max(hit.regex.lastIndex, nextIndex) + 1;
+          for (const regex of regexes) {
+            regex.lastIndex = nextIndex;
+          }
+          continue;
+        }
+
+        const newNode = this.template.cloneNode(false);
+        if (curNode.nodeValue.length > hit.end) {
+          nextNode = curNode.splitText(hit.end);
+        }
+        const wordNode = curNode.splitText(hit.start);
+        curNode.parentNode.replaceChild(newNode, wordNode);
+        newNode.appendChild(wordNode);
+
+        if (!nextNode) { break; }
+
+        curNode = nextNode;
+        s = curNode.nodeValue;
+        nextIndex = 0;
+        for (const regex of regexes) {
+          regex.lastIndex = 0;
+        }
+      }
+    },
+
+    markTextNodeReducer(a, b) {
+      if (a.start < b.start) { return a; }
+      if (a.start > b.start) { return b; }
+      if (a.len > b.len) { return a; }
+      if (a.len < b.len) { return b; }
+      return a;
+    },
+
+    cropSnippets(text, regexes, maxLen) {
+      cropAtHit: {
+        const hits = [];
+        for (const regex of regexes) {
+          regex.lastIndex = 0;
+          const m = regex.exec(text);
+          if (!m) { continue; }
+          const len = m[0].length;
+          const end = regex.lastIndex;
+          const start = regex.lastIndex - len;
+          hits.push({regex, start, len, end});
+        }
+        if (!hits.length) { break cropAtHit; }
+        const hit = hits.reduce(this.cropTextReducer);
+        const cropStart = Math.max(hit.start - maxLen / 4, 0);
+        text = text.slice(cropStart);
+      }
+      return scrapbook.crop(text, maxLen);
+    },
+
+    cropTextReducer(a, b) {
+      if (a.start < b.start) { return a; }
+      if (a.start > b.start) { return b; }
+      return a;
+    },
+  };
 
   const search = {
     defaultSearch: "",
     fulltextCacheUpdateThreshold: null,
     fulltextCacheRemoteSizeLimit: null,
     books: [],
+
+    enableUi(willEnable) {
+      document.querySelector('#searchForm fieldset').disabled = !willEnable;
+    },
 
     async init() {
       try {
@@ -133,7 +288,7 @@
           }
         }
 
-        document.getElementById('search').disabled = false;
+        this.enableUi(true);
 
         await Promise.all(usedBooks.map(book => this.loadBook(book)));
 
@@ -141,6 +296,8 @@
           document.getElementById('keyword').value = query;
           await this.search();
         }
+
+        document.getElementById('keyword').focus();
       } catch (ex) {
         console.error(ex);
         this.addMsg(`Error: ${ex.message}`, 'error');
@@ -175,14 +332,16 @@
         console.log("Search:", query);
 
         // search and get result
-        return await searchEngine.search(query);
+        return await searchEngine.search(query, {
+          resultHandler: this.showResults.bind(this),
+        });
       } catch(ex) {
         console.error(ex);
         this.addMsg(scrapbook.lang('ErrorSearch', [ex.message]), 'error');
       };
     },
 
-    showResults(results, book) {
+    showResults(results, {book, markers}) {
       this.addMsg(scrapbook.lang('SearchFound', [book.name, results.length]));
 
       const wrapper = document.createElement("div");
@@ -190,6 +349,10 @@
       const tree = new SearchTree({
         treeElem: wrapper,
         bookId: book.id,
+        markers,
+        commentLength: scrapbook.getOption("scrapbook.searchCommentLength"),
+        contextLength: scrapbook.getOption("scrapbook.searchContextLength"),
+        sourceLength: scrapbook.getOption("scrapbook.searchSourceLength"),
       });
       tree.init({
         book,
@@ -204,7 +367,7 @@
 
       for (const result of results) {
         const {id, file, meta, fulltext} = result;
-        tree.addItem(meta, file);
+        tree.addItem(meta, file, fulltext.content);
       }
 
       // Add a <br> for spacing between books, and adds a spacing when the user
@@ -335,6 +498,7 @@
         error: [],
         rules: {},
         sorts: [],
+        limit: null,
         books: {
           include: [],
           exclude: [],
@@ -366,6 +530,18 @@
           default:
             query.sorts.push({key: "meta", subkey: key, order});
             break;
+        }
+      };
+
+      const setLimit = (value, positive) => {
+        if (!positive) {
+          query.limit = null;
+          return; 
+        }
+
+        const newValue = parseInt(value);
+        if (!Number.isNaN(newValue)) {
+          query.limit = newValue;
         }
       };
 
@@ -444,6 +620,9 @@
           case "sort":
             addSort(term, pos ? 1 : -1);
             break;
+          case "limit":
+            setLimit(term, pos);
+            break;
           case "type":
             addRule("type", pos ? "include" : "exclude", parseStr(term, true));
             break;
@@ -458,6 +637,9 @@
             break;
           case "icon":
             addRule("icon", pos ? "include" : "exclude", parseStr(term));
+            break;
+          case "tc":
+            addRule("tc", pos ? "include" : "exclude", parseStr(term));
             break;
           case "tcc":
             addRule("tcc", pos ? "include" : "exclude", parseStr(term));
@@ -474,6 +656,9 @@
           case "index":
             addRule("index", pos ? "include" : "exclude", parseStr(term));
             break;
+          case "charset":
+            addRule("charset", pos ? "include" : "exclude", parseStr(term));
+            break;
           case "create":
             addRule("create", pos ? "include" : "exclude", parseDate(term));
             break;
@@ -486,6 +671,9 @@
           case "locked":
             addRule("locked", pos ? "include" : "exclude", true);
             break;
+          case "location":
+            addRule("location", pos ? "include" : "exclude", true);
+            break;
         }
 
         return "";
@@ -493,7 +681,61 @@
       return query;
     },
 
-    async search(query) {
+    parseMarkers(query) {
+      const markers = {
+        title: [],
+        comment: [],
+        content: [],
+        source: [],
+        file: [],
+      };
+      if (query.rules.tcc) {
+        for (const regex of query.rules.tcc.include) {
+          markers.title.push(regex);
+          markers.comment.push(regex);
+          markers.content.push(regex);
+        }
+      }
+      if (query.rules.tc) {
+        for (const regex of query.rules.tc.include) {
+          markers.title.push(regex);
+          markers.comment.push(regex);
+        }
+      }
+      if (query.rules.title) {
+        for (const regex of query.rules.title.include) {
+          markers.title.push(regex);
+        }
+      }
+      if (query.rules.comment) {
+        for (const regex of query.rules.comment.include) {
+          markers.comment.push(regex);
+        }
+      }
+      if (query.rules.content) {
+        for (const regex of query.rules.content.include) {
+          markers.content.push(regex);
+        }
+      }
+      if (query.rules.source) {
+        for (const regex of query.rules.source.include) {
+          markers.source.push(regex);
+        }
+      }
+      if (query.rules.file) {
+        for (const regex of query.rules.file.include) {
+          markers.file.push(regex);
+        }
+      }
+
+      for (const k in markers) {
+        markers[k] = markers[k].map(r => new RegExp(r.source, `${r.ignoreCase ? 'i': ''}mug`));
+      }
+
+      return markers;
+    },
+
+    async search(query, {resultHandler}) {
       const books = new Set(search.books);
       if (query.books.include.length) {
         for (const book of books) {
@@ -508,10 +750,12 @@
         }
       }
 
+      const markers = this.parseMarkers(query);
+
       for (const book of books) {
         await search.loadBook(book);
         const results = this.searchBook(query, book);
-        search.showResults(results, book);
+        resultHandler(results, {book, markers});
       }
     },
 
@@ -565,6 +809,11 @@
         });
       }
 
+      // limit results
+      if (query.limit) {
+        results.splice(query.limit);
+      }
+
       return results;
     },
 
@@ -578,6 +827,10 @@
       }
 
       return true;
+    },
+
+    _match_tc(rule, item) {
+      return this.matchText(rule, [item.meta.title, item.meta.comment].join("\n"));
     },
 
     _match_tcc(rule, item) {
@@ -608,6 +861,10 @@
       return this.matchText(rule, item.meta.index);
     },
 
+    _match_charset(rule, item) {
+      return this.matchText(rule, item.meta.charset);
+    },
+
     _match_source(rule, item) {
       return this.matchText(rule, item.meta.source);
     },
@@ -634,6 +891,10 @@
 
     _match_locked(rule, item) {
       return this.matchBool(rule, item.meta.locked);
+    },
+
+    _match_location(rule, item) {
+      return this.matchBool(rule, item.meta.location);
     },
 
     matchBool(rule, bool) {

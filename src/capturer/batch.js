@@ -77,13 +77,12 @@
     }
 
     await scrapbook.invokeCaptureEx({taskInfo, waitForResponse: false});
-    window.close();
   }
 
   function parseInputText(inputText, useJson = false) {
     if (useJson) {
       const taskInfo = JSON.parse(inputText);
-      if (typeof taskInfo !== 'object') {
+      if (typeof taskInfo !== 'object' || taskInfo === null || Array.isArray(taskInfo)) {
         throw new Error('JSON data is not a valid object.');
       } else if (!Array.isArray(taskInfo.tasks)) {
         throw new Error('"tasks" property of JSON data is not an Array.');
@@ -154,11 +153,11 @@
     }
   }
 
-  function onToggleTooltip(elem) {
-    if (!onToggleTooltip.tooltipMap) {
-      onToggleTooltip.tooltipMap = new WeakMap();
+  function toggleTooltip(elem) {
+    if (!toggleTooltip.tooltipMap) {
+      toggleTooltip.tooltipMap = new WeakMap();
     }
-    const tooltipMap = onToggleTooltip.tooltipMap;
+    const tooltipMap = toggleTooltip.tooltipMap;
 
     let tooltip = tooltipMap.get(elem);
     if (tooltip) {
@@ -172,50 +171,92 @@
     }
   }
 
+  async function exit() {
+    const tab = await browser.tabs.getCurrent();
+    return await browser.tabs.remove(tab.id);
+  };
+
+  function onUrlsChange(event) {
+    const useJson = document.getElementById('opt-useJson').checked;
+    if (!useJson) { return; }
+
+    const inputElem = event.target;
+    const inputText = inputElem.value;
+
+    try {
+      parseInputText(inputText, useJson);
+    } catch (ex) {
+      console.error(ex);
+      event.preventDefault();
+      inputElem.setCustomValidity(ex.message);
+      return;
+    }
+
+    inputElem.setCustomValidity('');
+  }
+
+  function onUseJsonChange(event) {
+    const inputElem = document.getElementById('urls');
+    const inputText = inputElem.value;
+    const useJson = event.target.checked;
+
+    let tasks;
+    try {
+      tasks = parseInputText(inputText, !useJson);
+    } catch (ex) {
+      // block invalid input to prevent missing
+      console.error(ex);
+      event.target.checked = !useJson;
+      event.preventDefault();
+      inputElem.setCustomValidity(ex.message);
+      inputElem.reportValidity();
+      return;
+    }
+
+    const newInputText = stringifyTasks(tasks, useJson);
+    updateInputText(inputElem, newInputText);
+    inputElem.setCustomValidity('');
+  }
+
+  async function onCaptureClick(event) {
+    const inputElem = document.getElementById('urls');
+    const inputText = inputElem.value;
+    const customTitle = document.getElementById('opt-customTitle').checked;
+    const useJson = document.getElementById('opt-useJson').checked;
+    const uniquify = document.getElementById('opt-uniquify').checked;
+
+    try {
+      await capture({inputText, customTitle, useJson, uniquify});
+      await exit();
+    } catch (ex) {
+      console.error(ex);
+      event.preventDefault();
+      inputElem.setCustomValidity(ex.message);
+      inputElem.reportValidity();
+      return;
+    }
+  }
+
+  async function onAbortClick(event) {
+    await exit();
+  }
+
+  function onTooltipClick(event) {
+    event.preventDefault();
+    const elem = event.currentTarget;
+    toggleTooltip(elem);
+  }
+
   document.addEventListener('DOMContentLoaded', async () => {
     scrapbook.loadLanguages(document);
 
-    document.getElementById('opt-useJson').addEventListener('change', (event) => {
-      const inputText = document.getElementById('urls').value;
-      const useJson = event.target.checked;
-
-      let tasks;
-      try {
-        tasks = parseInputText(inputText, !useJson);
-      } catch (ex) {
-        // error out if the input is not convertable to prevent missing
-        console.error(ex);
-        alert(`Error: ${ex.message}`);
-        event.target.checked = !useJson;
-        event.preventDefault();
-        return;
-      }
-
-      const newInputText = stringifyTasks(tasks, useJson);
-      updateInputText(document.getElementById('urls'), newInputText);
-    });
-    document.getElementById('btn-capture').addEventListener('click', (event) => {
-      const inputText = document.getElementById('urls').value;
-      const customTitle = document.getElementById('opt-customTitle').checked;
-      const useJson = document.getElementById('opt-useJson').checked;
-      const uniquify = document.getElementById('opt-uniquify').checked;
-
-      capture({inputText, customTitle, useJson, uniquify}).catch((ex) => {
-        console.error(ex);
-        alert(`Error: ${ex.message}`);
-      });
-    });
-    document.getElementById('btn-abort').addEventListener('click', async (event) => {
-      const tab = await browser.tabs.getCurrent();
-      return browser.tabs.remove(tab.id);
-    });
+    document.getElementById('urls').addEventListener('change', onUrlsChange);
+    document.getElementById('opt-useJson').addEventListener('change', onUseJsonChange);
+    document.getElementById('btn-capture').addEventListener('click', onCaptureClick);
+    document.getElementById('btn-abort').addEventListener('click', onAbortClick);
 
     for (const elem of document.querySelectorAll('a[data-tooltip]')) {
-      elem.addEventListener("click", (event) => {
-        event.preventDefault();
-        const elem = event.currentTarget;
-        onToggleTooltip(elem);
-      });
+      elem.addEventListener("click", onTooltipClick);
     }
 
     init();

@@ -43,6 +43,7 @@
   /**
    * @typedef {Object} missionCaptureInfo
    * @property {boolean} useDiskCache
+   * @property {Set<string~filename>} indexPages
    * @property {Map<string~filename, Object>} files
    * @property {Map<string~token, Promise<fetchResult>>} fetchMap
    * @property {Map<string~token, Object>} urlToFilenameMap
@@ -55,14 +56,18 @@
   capturer.captureInfo = new MapWithDefault(() => ({
     useDiskCache: false,
 
+    initialVersion: undefined,
+    indexPages: new Set(),
+
     // index.json is for site map
     // index.dat is used in legacy ScrapBook
-    // index.rdf and ^metadata^ are used in MAFF
+    // index.rdf, history.rdf, and ^metadata^ are used in MAFF
     // http://maf.mozdev.org/maff-specification.html
     files: new Map([
       ["index.json", {}],
       ["index.dat", {}],
       ["index.rdf", {}],
+      ["history.rdf", {}],
       ["^metadata^", {}],
     ]),
 
@@ -298,10 +303,9 @@
 
   capturer.clearFileCache = async function ({timeId}) {
     const tableSet = new Set(["pageCache", "fetchCache"]);
-    const items = await scrapbook.cache.getAll((obj) => {
+    await scrapbook.cache.remove((obj) => {
       return tableSet.has(obj.table) && obj.id === timeId;
     });
-    await scrapbook.cache.remove(Object.keys(items));
   };
 
   /**
@@ -555,7 +559,7 @@
             response.error = `Resource size limit exceeded.`;
           }
 
-          if (!(xhr.status >= 200 && xhr.status < 300)) {
+          if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 0)) {
             response.error = `${xhr.status} ${xhr.statusText}`;
           }
 
@@ -758,8 +762,10 @@
   /**
    * @param {Object} params
    * @param {string} [params.timeId] - an overriding timeId
-   * @param {string|null} [params.documentName] - default filename for the main document
-   * @param {boolean} [params.captureOnly] - skip adding item and clean up (for special modes)
+   * @param {?string} [params.documentName] - default filename for the main
+   *     document
+   * @param {boolean} [params.captureOnly] - skip adding item and clean up
+   *     (for special modes like recapture and mergeCapture)
    * @param {integer} [params.tabId]
    * @param {integer} [params.frameId]
    * @param {boolean} [params.fullPage]
@@ -816,6 +822,11 @@
       throw new Error(`Bad parameters.`);
     }
 
+    // special handling (for unit test)
+    if (options["capture.saveTo"] === "memory") {
+      return response;
+    }
+
     if (!captureOnly) {
       if (options["capture.saveTo"] === "server") {
         await capturer.addItemToServer({
@@ -835,6 +846,15 @@
         });
       }
 
+      await scrapbook.invokeExtensionScript({
+        cmd: "background.setCapturedUrls",
+        args: {urls: [scrapbook.normalizeUrl(response.sourceUrl)]},
+      });
+
+      await scrapbook.invokeExtensionScript({
+        cmd: "background.updateBadgeForAllTabs",
+      });
+
       // preserve info if error out
       capturer.captureInfo.delete(timeId);
       await capturer.clearFileCache({timeId});
@@ -846,7 +866,7 @@
   /**
    * @param {Object} params
    * @param {string} params.timeId
-   * @param {string|null} [params.documentName]
+   * @param {?string} [params.documentName]
    * @param {integer} params.tabId
    * @param {integer} [params.frameId]
    * @param {boolean} [params.fullPage]
@@ -929,7 +949,7 @@
   /**
    * @param {Object} params
    * @param {string} params.timeId
-   * @param {string|null} [params.documentName]
+   * @param {?string} [params.documentName]
    * @param {string} params.url
    * @param {string} [params.refUrl]
    * @param {string} [params.title] - item title
@@ -1100,9 +1120,10 @@
     // resolve meta refresh
     const metaRefreshChain = [];
     try {
+      let urlMain = sourceUrlMain;
       while (true) {
         fetchResponse = await capturer.fetch({
-          url: sourceUrlMain,
+          url: urlMain,
           refUrl,
           ignoreSizeLimit: settings.isMainPage && settings.isMainFrame,
           settings,
@@ -1131,8 +1152,9 @@
 
         metaRefreshChain.push(fetchResponse.url);
         refUrl = fetchResponse.url;
-        sourceUrl = metaRefreshTarget;
-        [sourceUrlMain, sourceUrlHash] = scrapbook.splitUrlByAnchor(sourceUrl);
+
+        // meta refresh will replace the original hash
+        [urlMain, sourceUrlHash] = scrapbook.splitUrlByAnchor(metaRefreshTarget);
       }
     } catch (ex) {
       // URL not accessible
@@ -1175,7 +1197,7 @@
         })
         .then(response => {
           return Object.assign({}, response, {
-            url: response.url + (response.url.startsWith('data:') ? '' : sourceUrlHash),
+            url: capturer.getRedirectedUrl(response.url, sourceUrlHash),
           });
         });
       }
@@ -1183,9 +1205,9 @@
       if (downLinkInDepth && doc) {
         const linkedPages = capturer.captureInfo.get(timeId).linkedPages;
         if (!linkedPages.has(sourceUrlMain)) {
-          const url = fetchResponse.url + (fetchResponse.url.startsWith('data:') ? '' : sourceUrlHash);
           linkedPages.set(sourceUrlMain, {
-            url,
+            url: metaRefreshChain.length > 0 ? capturer.getRedirectedUrl(fetchResponse.url, sourceUrlHash) : fetchResponse.url,
+            hasMetaRefresh: metaRefreshChain.length > 0,
             refUrl,
             depth,
           });
@@ -1198,7 +1220,7 @@
     if (doc) {
       return await capturer.captureDocumentOrFile({
         doc,
-        docUrl: fetchResponse.url + (fetchResponse.url.startsWith('data:') ? '' : sourceUrlHash),
+        docUrl: capturer.getRedirectedUrl(fetchResponse.url, sourceUrlHash),
         refUrl,
         settings,
         options,
@@ -1206,7 +1228,7 @@
     }
 
     return await capturer.captureFile({
-      url: fetchResponse.url + (fetchResponse.url.startsWith('data:') ? '' : sourceUrlHash),
+      url: capturer.getRedirectedUrl(fetchResponse.url, sourceUrlHash),
       refUrl,
       charset: fetchResponse.headers.charset,
       settings,
@@ -1349,7 +1371,7 @@
 <html${meta}>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url=${scrapbook.escapeHtml(sourceUrl)}">
+<meta http-equiv="refresh" content="0; url=${scrapbook.escapeHtml(sourceUrl)}">
 ${titleElem}${favIconElem}</head>
 <body>
 Bookmark for <a href="${scrapbook.escapeHtml(sourceUrl)}">${scrapbook.escapeHtml(sourceUrl, false)}</a>
@@ -1489,7 +1511,7 @@ Bookmark for <a href="${scrapbook.escapeHtml(sourceUrl)}">${scrapbook.escapeHtml
 <html${meta}>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url=${scrapbook.escapeHtml(response.url)}">
+<meta http-equiv="refresh" content="0; url=${scrapbook.escapeHtml(response.url)}">
 ${title ? '<title>' + scrapbook.escapeHtml(title, false) + '</title>\n' : ''}</head>
 <body>
 Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.escapeHtml(response.filename, false)}</a>
@@ -1534,12 +1556,12 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
         return Object.assign({}, response, {
           type: "file",
           charset: charset || undefined,
-          url: response.url + (response.url.startsWith('data:') ? '' : sourceUrlHash),
+          url: capturer.getRedirectedUrl(response.url, sourceUrlHash),
         });
       }
     } else {
       return Object.assign({}, response, {
-        url: response.url + (response.url.startsWith('data:') ? '' : sourceUrlHash),
+        url: capturer.getRedirectedUrl(response.url, sourceUrlHash),
       });
     }
   };
@@ -1610,13 +1632,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
               internalizePrefix = base + m[0];
             }
           }
-          if (!internalizePrefix) {
-            // unable to determine which subdirectory to be prefix
-            internalize = false;
-          }
         }
-      } else {
-        internalize = false;
       }
     }
 
@@ -1643,9 +1659,11 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
     // handle resources to internalize
     const resourceMap = new Map();
     if (internalize) {
+      const allowFileAccess = await browser.extension.isAllowedFileSchemeAccess();
       for (const [fileUrl, data] of Object.entries(response)) {
         const fetchResource = async (url) => {
           const fullUrl = scrapbook.normalizeUrl(capturer.resolveRelativeUrl(url, fileUrl));
+          if (!scrapbook.isContentPage(fullUrl, allowFileAccess)) { return null; }
           if (fullUrl.startsWith(internalizePrefix)) { return null; }
 
           const file = resourceMap.get(fullUrl);
@@ -1659,9 +1677,15 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
               responseType: 'blob',
             });
             const blob = xhr.response;
-            const sha = scrapbook.sha1(await scrapbook.readFileAsArrayBuffer(blob), 'ARRAYBUFFER');
-            const ext = Mime.extension(blob.type);
-            const file = new File([blob], sha + '.' + ext, {type: blob.type});
+
+            let file;
+            if (internalizePrefix) {
+              const sha = scrapbook.sha1(await scrapbook.readFileAsArrayBuffer(blob), 'ARRAYBUFFER');
+              const ext = Mime.extension(blob.type);
+              file = new File([blob], sha + '.' + ext, {type: blob.type});
+            } else {
+              file = await scrapbook.readFileAsDataURL(blob);
+            }
             resourceMap.set(fullUrl, file);
             return file;
           } catch (ex) {
@@ -1705,13 +1729,19 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
               // replace resource URLs
               content = content.replace(/urn:scrapbook:url:([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/g, (match, key) => {
                 if (data.resources[key]) {
-                  if (data.resources[key].file) {
-                    const resUrl = internalizePrefix + data.resources[key].file.name;
-                    const u = scrapbook.getRelativeUrl(resUrl, fileUrl);
-                    return scrapbook.escapeHtml(u);
-                  } else {
+                  const file = data.resources[key].file;
+
+                  if (!file) {
                     return scrapbook.escapeHtml(data.resources[key].url);
                   }
+
+                  if (typeof file === 'string') {
+                    return scrapbook.escapeHtml(file);
+                  }
+
+                  const resUrl = internalizePrefix + file.name;
+                  const u = scrapbook.getRelativeUrl(resUrl, fileUrl);
+                  return scrapbook.escapeHtml(u);
                 }
                 return match;
               });
@@ -1749,17 +1779,24 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
         // resources
         for (const [url, file] of resourceMap.entries()) {
           if (!file) { continue; }
-          const target = internalizePrefix + file.name;
-          await server.request({
-            url: target + '?a=save',
-            method: "POST",
-            format: 'json',
-            csrfToken: true,
-            body: {
-              upload: file,
-            },
-          });
-          capturer.log(`Internalized resource ${target}`);
+
+          let target;
+          if (typeof file === 'string') {
+            target = file;
+          } else {
+            target = internalizePrefix + file.name;
+            await server.request({
+              url: target + '?a=save',
+              method: "POST",
+              format: 'json',
+              csrfToken: true,
+              body: {
+                upload: file,
+              },
+            });
+          }
+
+          capturer.log(`Internalized resource: ${scrapbook.crop(target, 256)}`);
         }
 
         // update item
@@ -1994,7 +2031,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
                 const startCheck = text.slice(0, 3);
                 const endCheck = text.slice(-3);
 
-                scrapbook.unwrapElement(elem);
+                scrapbook.unwrapNode(elem);
 
                 Object.assign(annotation, {
                   startContainerPath: getXPath(startContainer, oldRootNode),
@@ -2017,7 +2054,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
             switch (annotation.removeType) {
               case 1: {
                 let {elemPath, startContainerPath, startOffset} = annotation;
-                const startContainer = newDoc.evaluate(startContainerPath, newDoc, null).iterateNext();
+                const startContainer = newDoc.evaluate(startContainerPath, newDoc, null, 0, null).iterateNext();
                 try {
                   if (!startContainer) {
                     throw new Error(`startContainer "${startContainerPath}" not found: ${elemPath}`);
@@ -2031,8 +2068,8 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
               }
               case 2: {
                 let {elemPath, startContainerPath, startOffset, endContainerPath, endOffset, startCheck, endCheck} = annotation;
-                const startContainer = newDoc.evaluate(startContainerPath, newDoc, null).iterateNext();
-                const endContainer = newDoc.evaluate(endContainerPath, newDoc, null).iterateNext();
+                const startContainer = newDoc.evaluate(startContainerPath, newDoc, null, 0, null).iterateNext();
+                const endContainer = newDoc.evaluate(endContainerPath, newDoc, null, 0, null).iterateNext();
                 try {
                   if (!startContainer) {
                     throw new Error(`startContainer "${startContainerPath}" not found: ${elemPath}`);
@@ -2222,6 +2259,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
 
         switch (sitemap.version) {
           case 1: {
+            info.initialVersion = sitemap.version;
             for (const {path, url, role, primary} of sitemap.files) {
               info.files.set(path, {
                 url,
@@ -2234,6 +2272,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
                   token = capturer.getRegisterToken(url, role);
                 } catch (ex) {
                   // skip special or undefined URL
+                  continue;
                 }
 
                 info.urlToFilenameMap.set(token, {
@@ -2259,7 +2298,61 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
                       blob,
                     });
                   } catch (ex) {
-                    // skip special or undefined URL
+                    // skip missing resource
+                    continue;
+                  }
+                }
+              }
+            }
+            break;
+          }
+          case 2: {
+            for (let indexPage of sitemap.indexPages) {
+              info.indexPages.add(indexPage);
+            }
+            for (let {path, url, role, token} of sitemap.files) {
+              info.files.set(path, {
+                url,
+                role,
+                token,
+              });
+
+              if (token) {
+                // use url and role if token not matched
+                // (possibly modified arbitrarily)
+                if (url && role) {
+                  const t = capturer.getRegisterToken(url, role);
+                  if (t !== token) {
+                    token = t;
+                    console.error(`Taking token from url and role for mismatching token: "${path}"`);
+                  }
+                }
+
+                info.urlToFilenameMap.set(token, {
+                  filename: path,
+                  url: scrapbook.escapeFilename(path),
+                });
+
+                // load previously captured pages to blob
+                if (REBUILD_LINK_SUPPORT_TYPES.has(Mime.lookup(path))) {
+                  const fileUrl = new URL(scrapbook.escapeFilename(path), indexUrl).href;
+                  try {
+                    const response = await server.request({
+                      url: fileUrl,
+                    });
+                    if (!response.ok) {
+                      throw new Error(`Bad status: ${response.status}`);
+                    }
+                    const blob = await response.blob();
+                    await capturer.saveFileCache({
+                      timeId,
+                      path,
+                      url,
+                      blob,
+                    });
+                  } catch (ex) {
+                    // skip missing resource
+                    continue;
                   }
                 }
               }
@@ -2273,6 +2366,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
         }
 
         // enforce some capture options
+        let depth = options["capture.downLink.doc.depth"];
         Object.assign(options, {
           // capture to server
           "capture.saveTo": "server",
@@ -2282,8 +2376,8 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
           // save to the same directory
           "capture.saveFilename": item.index.slice(0, -11),
           "capture.saveOverwrite": true,
-          // rebuild links and update index.json
-          "capture.downLink.doc.depth": 0,
+          // always rebuild links and update index.json
+          "capture.downLink.doc.depth": depth > 0 ? depth : 0,
         });
 
         // enforce disk cache
@@ -2449,9 +2543,9 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
             newDocumentName = documentNameBase + "_" + (++count);
             newDocumentNameCI = newDocumentName.toLowerCase();
           }
-          files.set(newDocumentNameCI + ".html", {url: 'about:blank', role});
-          files.set(newDocumentNameCI + ".xhtml", {url: 'about:blank', role});
-          files.set(newDocumentNameCI + ".svg", {url: 'about:blank', role});
+          files.set(newDocumentNameCI + ".html", {role});
+          files.set(newDocumentNameCI + ".xhtml", {role});
+          files.set(newDocumentNameCI + ".svg", {role});
           documentFileName = newDocumentName + "." + getExtFromMime(mime);
         } else {
           documentFileName = getDocumentFileName({
@@ -2693,6 +2787,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
         line = line.trim();
         if (!line || line.startsWith("#")) { continue; }
 
+        line = line.split(REGEX_SPACES)[0];
         if (REGEX_PATTERN.test(line)) {
           try {
             ret.push(new RegExp(RegExp.$1, RegExp.$2));
@@ -2700,7 +2795,6 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
             console.error(ex);
           }
         } else {
-          line = line.split(REGEX_SPACES)[0];
           line = scrapbook.splitUrlByAnchor(line)[0];
           ret.push(line);
         }
@@ -2747,6 +2841,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
         line = line.trim();
         if (!line || line.startsWith("#")) { continue; }
 
+        line = line.split(REGEX_SPACES)[0];
         if (REGEX_PATTERN.test(line)) {
           try {
             ret.push(new RegExp(RegExp.$1, RegExp.$2));
@@ -2754,7 +2849,6 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
             console.error(ex);
           }
         } else {
-          line = line.split(REGEX_SPACES)[0];
           line = scrapbook.splitUrlByAnchor(line)[0];
           ret.push(line);
         }
@@ -2887,7 +2981,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(response.url)}">${scrapbook.
 <html${meta}>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url=${scrapbook.escapeHtml(target)}">
+<meta http-equiv="refresh" content="0; url=${scrapbook.escapeHtml(target)}">
 ${title ? '<title>' + scrapbook.escapeHtml(title, false) + '</title>\n' : ''}</head>
 <body>
 Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(target, false)}</a>
@@ -3086,6 +3180,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
     let targetDir;
     let filename;
     let [, ext] = scrapbook.filenameParts(documentFileName);
+    capturer.captureInfo.get(timeId).indexPages.add(documentFileName);
     switch (options["capture.saveAs"]) {
       case "singleHtml": {
         // singleHtml does not support deep capture
@@ -3241,7 +3336,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
     // special handling for data URI
     // if not saved as file, save as-is regardless of its MIME type
     if (sourceUrlMain.startsWith("data:")) {
-      if (!(options["capture.saveDataUriAsFile"] && !["singleHtml"].includes(options["capture.saveAs"]))) {
+      if (!(options["capture.saveDataUriAsFile"] && options["capture.saveAs"] !== "singleHtml")) {
         return {url: sourceUrlMain};
       }
     }
@@ -3260,7 +3355,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
 
     const registry = await capturer.registerFile({
       url: sourceUrl,
-      role: ["singleHtml"].includes(options["capture.saveAs"]) ? undefined : 'resource',
+      role: options["capture.saveAs"] === "singleHtml" ? undefined : 'resource',
       settings,
       options,
     });
@@ -3652,7 +3747,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
    * @param {Object} params.options
    */
   capturer.rebuildLinks = async function (params) {
-    const rewriteHref = (elem, attr, urlToFilenameMap) => {
+    const rewriteHref = (elem, attr, urlToFilenameMap, linkedPages) => {
       let u;
       try {
         u = new URL(elem.getAttribute(attr));
@@ -3661,24 +3756,35 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
         return;
       }
 
-      const hash = u.hash;
+      let urlHash = u.hash;
       u.hash = '';
+      let urlMain = u.href;
 
-      const token = capturer.getRegisterToken(u.href, 'document');
+      // handle possible redirect
+      const linkedPageItem = linkedPages.get(urlMain);
+      if (linkedPageItem) {
+        if (linkedPageItem.hasMetaRefresh) {
+          [urlMain, urlHash] = scrapbook.splitUrlByAnchor(linkedPageItem.url);
+        } else {
+          [urlMain, urlHash] = scrapbook.splitUrlByAnchor(capturer.getRedirectedUrl(linkedPageItem.url, urlHash));
+        }
+      }
+
+      const token = capturer.getRegisterToken(urlMain, 'document');
       const p = urlToFilenameMap.get(token);
       if (!p) { return; }
 
-      elem.setAttribute(attr, p.url + hash);
+      elem.setAttribute(attr, capturer.getRedirectedUrl(p.url, urlHash));
     };
 
-    const processRootNode = (rootNode, urlToFilenameMap) => {
+    const processRootNode = (rootNode, urlToFilenameMap, linkedPages) => {
       // rewrite links
       switch (rootNode.nodeName.toLowerCase()) {
         case 'svg': {
           for (const elem of rootNode.querySelectorAll('a[*|href]')) {
             for (const attr of REBUILD_LINK_SVG_HREF_ATTRS) {
               if (!elem.hasAttribute(attr)) { continue; }
-              rewriteHref(elem, attr, urlToFilenameMap);
+              rewriteHref(elem, attr, urlToFilenameMap, linkedPages);
             }
           }
           break;
@@ -3686,7 +3792,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
         case 'html':
         case '#document-fragment': {
           for (const elem of rootNode.querySelectorAll('a[href], area[href]')) {
-            rewriteHref(elem, 'href', urlToFilenameMap);
+            rewriteHref(elem, 'href', urlToFilenameMap, linkedPages);
           }
           break;
         }
@@ -3694,15 +3800,11 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
 
       // recurse into shadow roots
       if (SHADOW_ROOT_SUPPORTED) {
-        for (const elem of rootNode.querySelectorAll('[data-scrapbook-shadowroot]')) {
-          const {mode, data} = JSON.parse(elem.getAttribute('data-scrapbook-shadowroot'));
-          const shadowRoot = elem.attachShadow({mode});
-          shadowRoot.innerHTML = data;
-          processRootNode(shadowRoot, urlToFilenameMap);
-          elem.setAttribute("data-scrapbook-shadowroot", JSON.stringify({
-            data: shadowRoot.innerHTML,
-            mode,
-          }));
+        for (const elem of rootNode.querySelectorAll('[data-scrapbook-shadowdom]')) {
+          const shadowRoot = elem.attachShadow({mode: 'open'});
+          shadowRoot.innerHTML = elem.getAttribute('data-scrapbook-shadowdom');
+          processRootNode(shadowRoot, urlToFilenameMap, linkedPages);
+          elem.setAttribute("data-scrapbook-shadowdom", shadowRoot.innerHTML);
         }
       }
     };
@@ -3711,6 +3813,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
       const info = capturer.captureInfo.get(timeId);
       const files = info.files;
       const urlToFilenameMap = info.urlToFilenameMap;
+      const linkedPages = info.linkedPages;
 
       for (const [filename, item] of files.entries()) {
         const blob = item.blob;
@@ -3724,7 +3827,7 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
         }
 
         const doc = await scrapbook.readFileAsDocument(blob);
-        processRootNode(doc.documentElement, urlToFilenameMap);
+        processRootNode(doc.documentElement, urlToFilenameMap, linkedPages);
 
         const content = scrapbook.documentToString(doc, options["capture.prettyPrint"]);
         await capturer.saveFileCache({
@@ -3749,25 +3852,36 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
     const urlToFilenameMap = info.urlToFilenameMap;
 
     const sitemap = {
-      version: 1,
+      version: 2,
+      initialVersion: info.initialVersion,
+      indexPages: [...info.indexPages],
       files: [],
     };
 
-    for (const [path, {url, role}] of files.entries()) {
-      let primary;
-      try {
-        const token = capturer.getRegisterToken(url, role);
-        const p = urlToFilenameMap.get(token);
-        if (p) { primary = true; }
-      } catch (ex) {
-        // skip special or undefined URL
+    for (let [path, {url, role, token}] of files.entries()) {
+      if (!token) {
+        try {
+          const t = capturer.getRegisterToken(url, role);
+          if (urlToFilenameMap.has(t)) {
+            token = t;
+          }
+        } catch (ex) {
+          // skip special or undefined URL
+        }
+      }
+
+      // Don't record real URL for data:, blob:, etc.
+      if (url) {
+        if (!(url.startsWith('http:') || url.startsWith('https:') || url.startsWith('file:'))) {
+          url = undefined;
+        }
       }
 
       sitemap.files.push({
         path,
         url,
         role,
-        primary,
+        token,
       });
     }
 
@@ -3866,11 +3980,6 @@ Redirecting to <a href="${scrapbook.escapeHtml(target)}">${scrapbook.escapeHtml(
 
     const closeWindow = async () => {
       await scrapbook.delay(1000);
-
-      if (browser.windows) {
-        const win = await browser.windows.getCurrent();
-        return await browser.windows.remove(win.id);
-      }
 
       const tab = await browser.tabs.getCurrent();
       return await browser.tabs.remove(tab.id);

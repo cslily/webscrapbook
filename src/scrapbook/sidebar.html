@@ -8,8 +8,10 @@
 <link rel="stylesheet" href="tree.css">
 <link rel="stylesheet" href="bookTree.css">
 <link rel="stylesheet" href="sidebar.css">
+<script src="../lib/strftime.js"></script>
 <script src="../lib/browser-polyfill.js"></script>
 <script src="../core/common.js"></script>
+<script src="../core/optionsAuto.js"></script>
 <script src="../core/extension.js"></script>
 <script src="server.js"></script>
 <script src="tree.js"></script>
@@ -31,7 +33,16 @@
     <input type="file" id="upload-file-selector" multiple hidden>
   </form>
   <pre id="logger"></pre>
-  <div id="items"></div>
+  <div id="tree">
+    <div id="items"></div>
+    <!-- Firefox has a bug that CSS resize doesn't work for iframe.
+         Add a wrapper to workaround it.
+         ref: https://bugzilla.mozilla.org/show_bug.cgi?id=680823
+     -->
+    <div id="postit-resizer" hidden>
+      <iframe id="postit"></iframe>
+    </div>
+  </div>
 </div>
 
 <div id="command-popup-book" tabindex="-1" hidden>
@@ -76,6 +87,7 @@
   <button value="delete" hidden>__MSG_ScrapBookCommandDelete__</button>
   <hr>
   <button value="recapture" hidden>__MSG_ScrapBookCommandRecapture__...</button>
+  <button value="copyinfo" hidden>__MSG_ScrapBookCommandCopyInfo__</button>
   <button value="meta" hidden>__MSG_ScrapBookCommandMeta__</button>
 </div>
 

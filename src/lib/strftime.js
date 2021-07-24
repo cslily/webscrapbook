@@ -21,6 +21,7 @@
 
   'use strict';
 
+  const MAIN_PATTERN = /%([a-z%])/gi;
   const DAY_COUNT = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
 
   class Strftime {
@@ -32,6 +33,7 @@
       this.date = (date instanceof Date) ? date : new Date();
       this.isUtc = isUtc;
       this.space = space;
+      this._formatKey = (_, key) => (this.formatKey(key) || `%${key}`);
     }
 
     get nSeconds() {
@@ -382,13 +384,15 @@
       return this.isUtc ? 'UTC' : this.date.toTimeString().replace(/[^()]+\(([^()]+)\)$/, '$1');
     }
 
+    formatKey(key) {
+      const fn = this[`format_${key}`];
+      if (typeof fn === 'function') { return fn.call(this).toString(); }
+      if (key === '%') { return '%'; }
+      return '';
+    }
+
     format(str) {
-      return str.replace(/%([a-z%])/gi, (_, key) => {
-        const fn = this[`format_${key}`];
-        if (typeof fn === 'function') { return fn.call(this).toString(); }
-        if (key === '%') { return '%'; }
-        return `%${key}`;
-      });
+      return str.replace(MAIN_PATTERN, this._formatKey);
     }
 
     static format(str, options) {

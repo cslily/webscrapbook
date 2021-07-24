@@ -62,6 +62,23 @@
     return listener;
   };
 
+  /**
+   * Invoke an invokable command in the background script.
+   *
+   * @param {Object} params
+   * @param {string} params.cmd
+   * @param {Object} [params.args]
+   * @return {Promise<Object>}
+   */
+  scrapbook.invokeBackgroundScript = async function ({cmd, args}) {
+    // if this is the background page
+    if (window.background) {
+      return window.background[cmd](args);
+    }
+
+    return scrapbook.invokeExtensionScript({cmd: `background.${cmd}`, args});
+  };
+
 
   /****************************************************************************
    * ScrapBook utilities
@@ -84,12 +101,13 @@
   /**
    * @return {Promise<Array>}
    */
-  scrapbook.getContentTabs = async function () {
+  scrapbook.getContentTabs = async function (filter) {
     // scrapbook.getContentPagePattern() resolves to [] on Firefox Android 57
     // due to a bug of browser.tabs.query:
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1418737
     const allowFileAccess = await browser.extension.isAllowedFileSchemeAccess();
-    const tabs = await browser.tabs.query({currentWindow: true, url: "<all_urls>"});
+    const queryObj = Object.assign({currentWindow: true, url: "<all_urls>"}, filter);
+    const tabs = await browser.tabs.query(queryObj);
 
     // Note that tab.hidden is only supported in Firefox >= 61. For other
     // browsers it's undefined.
@@ -122,11 +140,19 @@
 
   /**
    * @param {string} url
-   * @param {boolean} [newTab]
+   * @param {boolean} [newTab] - Truthy to always open in a new tab.
    * @param {string|array|boolean} [singleton] - URL match pattern for singleton;
-   *     true: match url with any query; false: not singleton
+   *     true: match url with any query; false: not singleton.
+   * @param {boolean} [inNormalWindow] - Open in a normal window only.
+   * @return {Promise<Tab>}
    */
-  scrapbook.visitLink = async function ({url, newTab = false, singleton = false}) {
+  scrapbook.visitLink = async function ({
+    url,
+    newTab = false,
+    singleton = false,
+    inNormalWindow = false,
+  }) {
+    // If a matched singleton tab exists, return it.
     if (singleton) {
       if (singleton === true) {
         const u = new URL(url);
@@ -143,7 +169,53 @@
     }
 
     if (newTab) {
+      // If inNormalWindow, create a tab in the last focused window.
+      //
+      // Firefox < 60 (?) allows multiple tabs in a popup window, but the
+      // user cannot switch between them.
+      //
+      // Chromium allows only one tab in a popup window. Although
+      // tabs.create without windowId creates a new tab in the last focused
+      // window, some Chromium forks has an inconsistent behavior (e.g.
+      // Vivaldi creates the tab in the current window, overwriting the
+      // current tab).
+      if (inNormalWindow && browser.windows) {
+        const win = await scrapbook.invokeBackgroundScript({
+          cmd: "getLastFocusedWindow",
+          args: {populate: true, windowTypes: ['normal']},
+        });
+
+        if (!win) {
+          const {tabs: [tab]} = await browser.windows.create({url});
+          return tab;
+        }
+
+        return await browser.tabs.create({url, windowId: win.id});
+      }
+
+      // Otherwise, create a tab in the current window.
       return await browser.tabs.create({url});
+    }
+
+    // If inNormalWindow, open in the active tab of the last focused window.
+    if (inNormalWindow && browser.windows) {
+      const win = await scrapbook.invokeBackgroundScript({
+        cmd: "getLastFocusedWindow",
+        args: {populate: true, windowTypes: ['normal']},
+      });
+
+      if (!win) {
+        const {tabs: [tab]} = await browser.windows.create({url});
+        return tab;
+      }
+
+      const targetTab = win.tabs.filter(x => x.active)[0];
+
+      if (!targetTab) {
+        return await browser.tabs.create({url, windowId: win.id});
+      }
+
+      return await browser.tabs.update(targetTab.id, {url});
     }
 
     return await browser.tabs.update({url, active: true});
@@ -171,6 +243,7 @@
   scrapbook.invokeCaptureEx = async function ({
     taskInfo,
     windowCreateData,
+    tabCreateData,
     waitForResponse = true,
   }) {
     const missionId = scrapbook.getUuid();
@@ -182,29 +255,25 @@
     let tab;
     if (browser.windows) {
       const win = await browser.windows.getCurrent();
-      const captureWindow = await browser.windows.create(Object.assign({
+      ({tabs: [tab]} = await browser.windows.create(Object.assign({
         url,
         type: 'popup',
         width: 400,
         height: 400,
         incognito: win.incognito,
-      }, windowCreateData));
+      }, windowCreateData)));
 
       if (!waitForResponse) {
-        return captureWindow;
+        return tab;
       }
-
-      tab = captureWindow.tabs[0];
     } else {
-      const captureTab = await browser.tabs.create({
+      tab = await browser.tabs.create(Object.assign({
         url,
-      });
+      }, tabCreateData));
 
       if (!waitForResponse) {
-        return captureTab;
+        return tab;
       }
-
-      tab = captureTab;
     }
 
     // wait until tab loading complete
@@ -241,26 +310,30 @@
   /**
    * Shortcut for invoking a general "capture as".
    */
-  scrapbook.invokeCaptureAs = async function ({
-    tasks = {},
-    mode = "",
-    bookId,
-    parentId = "root",
-    delay = null,
-    options = scrapbook.getOptions("capture"),
-  } = {}) {
-    if (typeof bookId === 'undefined') {
-      bookId = (await scrapbook.cache.get({table: "scrapbookServer", key: "currentScrapbook"}, 'storage')) || "";
+  scrapbook.invokeCaptureAs = async function (taskInfo) {
+    const {
+      tasks = [],
+      mode = "",
+      bookId,
+      parentId = "root",
+      index,
+      delay = null,
+      options = await scrapbook.getOptions("capture", null),
+    } = taskInfo || {};
+    taskInfo = Object.assign({
+      tasks,
+      mode,
+      bookId,
+      parentId,
+      index,
+      delay,
+      options,
+    }, taskInfo);
+    if (typeof taskInfo.bookId === 'undefined') {
+      taskInfo.bookId = (await scrapbook.cache.get({table: "scrapbookServer", key: "currentScrapbook"}, 'storage')) || "";
     }
     return await scrapbook.invokeBatchCapture({
-      taskInfo: {
-        tasks,
-        mode,
-        bookId,
-        parentId,
-        delay,
-        options,
-      },
+      taskInfo,
       customTitle: true,
       useJson: true,
     });
@@ -281,8 +354,7 @@
     const key = {table: "batchCaptureMissionCache", id: missionId};
     await scrapbook.cache.set(key, params);
     const url = browser.runtime.getURL("capturer/batch.html") + `?mid=${missionId}`;
-    const tab = await browser.tabs.create({url});
-    return tab;
+    return scrapbook.visitLink({url, newTab: true, inNormalWindow: true});
   };
 
   /**
@@ -345,7 +417,7 @@
         }
       }
 
-      const axis = {};
+      const axis = {state: 'normal'};
       if (mainLeft !== currentWindow.left) { axis.left = mainLeft; }
       if (mainTop !== currentWindow.top) { axis.top = mainTop; }
       if (mainWidth !== currentWindow.width) { axis.width = mainWidth; }

@@ -34,7 +34,7 @@
         baseElem.parentNode.insertBefore(selector, baseElem.nextSibling);
       }
       return await new Promise(async (resolve, reject) => {
-        (await scrapbook.getContentTabs()).forEach((tab) => {
+        for (const tab of await scrapbook.getContentTabs()) {
           const elem = document.createElement("button");
           elem.className = "sub";
           elem.textContent = (tab.index + 1) + ": " + tab.title;
@@ -45,14 +45,14 @@
             selector.remove();
           });
           selector.appendChild(elem);
-        });
+        }
       });
     };
 
     const onCaptureCommandClick = async (event, params) => {
       const tabs = targetTab ? 
           await scrapbook.getHighlightedTabs() : 
-          [await selectTabFromDom(document.getElementById("captureTab"))];
+          [await selectTabFromDom(event.currentTarget)];
       return await scrapbook.invokeCapture(
         tabs.map(tab => (Object.assign({
           tabId: tab.id,
@@ -71,6 +71,15 @@
         'text/plain',
         targetTab.id,
       );
+
+      // a delay is required or the dragging will be ended immediately
+      setTimeout(() => {
+        document.documentElement.classList.add('dragged-within');
+      }, 0);
+    };
+
+    const onCaptureCommandDragEnd = function (event) {
+      document.documentElement.classList.remove('dragged-within');
     };
 
     const {isPrompt, activeTab, targetTab} = await (async () => {
@@ -120,24 +129,28 @@
       document.getElementById("captureTab").addEventListener('dragstart', (event) => {
         onCaptureCommandDragStart(event);
       });
+      document.getElementById("captureTab").addEventListener('dragend', onCaptureCommandDragEnd);
 
       document.getElementById("captureTabSource").addEventListener('dragstart', (event) => {
         onCaptureCommandDragStart(event, {
           mode: "source",
         });
       });
+      document.getElementById("captureTabSource").addEventListener('dragend', onCaptureCommandDragEnd);
 
       document.getElementById("captureTabBookmark").addEventListener('dragstart', (event) => {
         onCaptureCommandDragStart(event, {
           mode: "bookmark",
         });
       });
+      document.getElementById("captureTabBookmark").addEventListener('dragend', onCaptureCommandDragEnd);
 
       document.getElementById("captureTabAs").addEventListener('dragstart', (event) => {
         onCaptureCommandDragStart(event, {
           captureAs: true,
         });
       });
+      document.getElementById("captureTabAs").addEventListener('dragend', onCaptureCommandDragEnd);
     }
 
     document.getElementById("captureTab").addEventListener('click', async (event) => {
@@ -159,7 +172,7 @@
     document.getElementById("captureTabAs").addEventListener('click', async (event) => {
       const tabs = targetTab ? 
           await scrapbook.getHighlightedTabs() : 
-          [await selectTabFromDom(document.getElementById("captureTabAs"))];
+          [await selectTabFromDom(event.currentTarget)];
       return await scrapbook.invokeCaptureAs({
         tasks: tabs.map(tab => ({
           tabId: tab.id,
@@ -181,7 +194,7 @@
     });
 
     document.getElementById("batchCaptureLinks").addEventListener('click', async (event) => {
-      const tab = targetTab || await selectTabFromDom(document.getElementById("batchCaptureLinks"));
+      const tab = targetTab || await selectTabFromDom(event.currentTarget);
       return scrapbook.initContentScripts(tab.id)
         .then(() => {
           return scrapbook.invokeContentScript({
@@ -196,7 +209,7 @@
     });
 
     document.getElementById("editTab").addEventListener('click', async (event) => {
-      const tab = targetTab || await selectTabFromDom(document.getElementById("editTab"));
+      const tab = targetTab || await selectTabFromDom(event.currentTarget);
       await scrapbook.editTab({
         tabId: tab.id,
         force: true,
@@ -211,7 +224,7 @@
     document.getElementById("searchCaptures").addEventListener('click', async (event) => {
       const tabs = targetTab ? 
           await scrapbook.getHighlightedTabs() : 
-          [await selectTabFromDom(document.getElementById("searchCaptures"))];
+          [await selectTabFromDom(event.currentTarget)];
       return await scrapbook.searchCaptures({
         tabs,
         newTab: !!targetTab,

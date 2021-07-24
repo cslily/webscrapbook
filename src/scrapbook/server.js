@@ -49,6 +49,16 @@
     },
   };
 
+  const REGEX_ITEM_POSTIT = new RegExp('^[\\S\\s]*?<pre>\\n?([^<]*(?:<(?!/pre>)[^<]*)*)\\n</pre>[\\S\\s]*$');
+  const ITEM_POSTIT_FORMATTER = `\
+<!DOCTYPE html><html><head>\
+<meta charset="UTF-8">\
+<meta name="viewport" content="width=device-width">\
+<style>pre { white-space: pre-wrap; overflow-wrap: break-word; }</style>\
+</head><body><pre>
+%POSTIT_CONTENT%
+</pre></body></html>`;
+
   class RequestError extends Error {
     constructor(message, response) {
       super(message);
@@ -286,10 +296,12 @@
 
     /**
      * Load the config of the backend server
+     *
+     * @return {boolean} whether server config is changed
      */
     async init(refresh = false) {
       if (this._config && !refresh) {
-        return;
+        return false;
       }
 
       if (!scrapbook.hasServer()) {
@@ -362,7 +374,7 @@
         if (this._config &&
             this._serverRoot === serverRoot &&
             JSON.stringify(this._config) === JSON.stringify(config)) {
-          return;
+          return false;
         }
 
         this._serverRoot = serverRoot;
@@ -399,6 +411,8 @@
           this._books[bookId] = new Book(bookId, this);
         }
       }
+
+      return true;
     }
 
     /**
@@ -950,8 +964,8 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      * Add (or replace) an item to the Book.
      *
      * @param {Object} params
-     * @param {Objet|null} params.item - null to generate a default item. Overwrites existed id.
-     * @param {string|null} params.parentId - null to not add to any parent
+     * @param {?Object} params.item - null to generate a default item. Overwrites existed id.
+     * @param {?string} params.parentId - null to not add to any parent
      * @param {integer} params.index - Infinity to insert to last
      * @return {Object}
      */
@@ -997,7 +1011,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.parentId - null to not removed from certain parent
+     * @param {?string} params.parentId - null to not removed from certain parent
      *         (useful for checking stale items)
      * @param {integer} params.index
      * @return {Set} a set of removed items
@@ -1051,7 +1065,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.currentParentId - null to not removed from certain parent
+     * @param {?string} params.currentParentId - null to not removed from certain parent
      *         (useful for checking stale items)
      * @param {integer} params.currentIndex
      * @param {string} [params.targetParentId] - ID of the recycle bin item
@@ -1103,7 +1117,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.currentParentId - null if none
+     * @param {?string} params.currentParentId - null if none
      * @param {integer} params.currentIndex
      * @param {integer} params.targetParentId
      * @param {integer} [params.targetIndex] - Infinity to insert to last
@@ -1162,6 +1176,39 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
       };
       _addDecendingItems(id);
       return set;
+    }
+
+    /**
+     * Get URL of the real index file of an item.
+     *
+     * - Consider redirection of HTZ or MAFF.
+     * - Consider meta refresh of index.html.
+     */
+    async getItemIndexUrl(item, {
+      checkArchiveRedirect = true,
+      checkMetaRefresh = true,
+    } = {}) {
+      const index = item.index;
+      if (!index) { return; }
+
+      let target = this.dataUrl + scrapbook.escapeFilename(index);
+
+      if (checkArchiveRedirect) {
+        const response = await this.server.request({
+          url: target,
+          method: "HEAD",
+        });
+        target = response.url;
+      }
+
+      if (checkMetaRefresh && target.endsWith('/index.html')) {
+        const redirectedTarget = await this.server.getMetaRefreshTarget(target);
+        if (redirectedTarget) {
+          target = redirectedTarget;
+        }
+      }
+
+      return target;
     }
 
     /**
@@ -1300,6 +1347,89 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
         }
         return value ? scrapbook.escapeHtml(value) : '';
       });
+    }
+
+    async loadPostit(item) {
+      const target = await this.getItemIndexUrl(item);
+      let text = await server.request({
+        url: target + '?a=source',
+        method: "GET",
+      }).then(r => r.text());
+      text = text.replace(/\r\n?/g, '\n');
+      text = text.replace(REGEX_ITEM_POSTIT, '$1');
+      return scrapbook.unescapeHtml(text);
+    }
+
+    async savePostit(id, text) {
+      let item;
+      let errors = [];
+      await this.transaction({
+        mode: 'refresh',
+        callback: async (book, updated) => {
+          const meta = await book.loadMeta(updated);
+
+          item = meta[id];
+          if (!item) {
+            throw new Error(`Specified item "${id}" does not exist.`);
+          }
+
+          // upload text content
+          const title = text.replace(/\n[\s\S]*$/, '');
+          const content = ITEM_POSTIT_FORMATTER.replace(/%(\w*)%/gu, (_, key) => {
+            let value;
+            switch (key) {
+              case '':
+                value = '%';
+                break;
+              case 'POSTIT_CONTENT':
+                value = text;
+                break;
+            }
+            return value ? scrapbook.escapeHtml(value) : '';
+          });
+
+          const target = await this.getItemIndexUrl(item);
+          await this.server.request({
+            url: target + '?a=save',
+            method: "POST",
+            format: 'json',
+            csrfToken: true,
+            body: {
+              text: scrapbook.unicodeToUtf8(content),
+            },
+          });
+
+          // update item
+          item.title = title;
+          item.modify = scrapbook.dateToId();
+          await book.saveMeta();
+
+          if (scrapbook.getOption("indexer.fulltextCache")) {
+            await this.server.requestSse({
+              query: {
+                "a": "cache",
+                "book": book.id,
+                "item": item.id,
+                "fulltext": 1,
+                "inclusive_frames": scrapbook.getOption("indexer.fulltextCacheFrameAsPageContent"),
+                "no_lock": 1,
+                "no_backup": 1,
+              },
+              onMessage(info) {
+                if (['error', 'critical'].includes(info.type)) {
+                  errors.push(`Error when updating fulltext cache: ${info.msg}`);
+                }
+              },
+            });
+          }
+
+          await book.loadTreeFiles(true);  // update treeLastModified
+        },
+      });
+      return {
+        title: item.title,
+        errors,
+      };
     }
 
     /**

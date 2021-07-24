@@ -20,17 +20,15 @@
 
   const OPTION_PREFIX = "opt_";
 
-  const defaultOptions = JSON.parse(JSON.stringify(scrapbook.options));
-
-  async function initDefaultOptions() {
-    const options = await scrapbook.loadOptions();
-    for (const id in options) {
-      setOptionToDocument(id, options[id]);
+  async function initOptions() {
+    const options = await scrapbook.getOptions();
+    for (const key in options) {
+      setOptionToDocument(key, options[key]);
     }
   }
 
-  function getOptionFromDocument(id) {
-    const elem = document.getElementById(OPTION_PREFIX + id);
+  function getOptionFromDocument(key) {
+    const elem = document.getElementById(OPTION_PREFIX + key);
     if (!elem) { return; }
 
     if (elem.matches('input[type="checkbox"]')) {
@@ -42,8 +40,8 @@
     }
   }
 
-  function setOptionToDocument(id, value, includeHidden) {
-    let elem = document.getElementById(OPTION_PREFIX + id);
+  function setOptionToDocument(key, value, includeHidden) {
+    let elem = document.getElementById(OPTION_PREFIX + key);
 
     // If the given option is not in the form, create a hidden element to allow
     // reseting hidden values or do some hacking.
@@ -68,7 +66,7 @@
         elem = document.createElement('input');
         elem.type = 'number';
       }
-      elem.id = OPTION_PREFIX + id;
+      elem.id = OPTION_PREFIX + key;
       elem.hidden = true;
       wrapper.appendChild(elem);
     }
@@ -91,13 +89,13 @@
   }
 
   function resetOptions(file) {
-    for (const id in defaultOptions) {
-      setOptionToDocument(id, defaultOptions[id], true);
+    for (const key in scrapbook.DEFAULT_OPTIONS) {
+      setOptionToDocument(key, scrapbook.DEFAULT_OPTIONS[key], true);
     }
   }
 
-  function exportOptions() {
-    const blob = new Blob([JSON.stringify(scrapbook.options, null, 2)], {type: "application/json"});
+  async function exportOptions() {
+    const blob = new Blob([JSON.stringify(await scrapbook.getOptions(), null, 2)], {type: "application/json"});
     const filename = `webscrapbook.options.${scrapbook.dateToId().slice(0, 8)}.json`;
 
     if (scrapbook.userAgent.is('gecko')) {
@@ -128,12 +126,9 @@
     document.getElementById("import-input").value = null;
 
     try {
-      const data = JSON.parse(await scrapbook.readFileAsText(file));
-      const options = Object.assign(scrapbook.options, data);
-      scrapbook.options = options;
-      await scrapbook.saveOptions();
-      for (const id in options) {
-        setOptionToDocument(id, options[id], true);
+      const options = JSON.parse(await scrapbook.readFileAsText(file));
+      for (const key in options) {
+        setOptionToDocument(key, options[key], true);
       }
       alert(scrapbook.lang("OptionsImportSuccess"));
     } catch (ex) {
@@ -180,94 +175,46 @@
     await scrapbook.cache.set(getDetailStatusKey(), status, 'storage');
   }
 
-  function verifyHelpers() {
-    const json = document.getElementById("opt_capture.helpers").value;
-
-    if (json) {
-      try {
-        JSON.parse(json);
-      } catch (ex) {
-        if (confirm(scrapbook.lang("OptionCaptureHelpersError", [ex.message]))) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  }
-
-  function verifyDownLinkFilters(rules) {
-    const checkRule = (rules) => {
-      rules.split(/(?:\n|\r\n?)/).forEach(function (srcLine, index) {
-        let line = srcLine.trim();
-        if (!line || line.startsWith("#")) { return; }
-
-        // pass non-RegExp
-        if (!/^\/(.*)\/([a-z]*)$/.test(line)) { return; }
-
-        try {
-          new RegExp(`^(?:${RegExp.$1})$`, RegExp.$2);
-        } catch (ex) {
-          line = scrapbook.lang("OptionCaptureDownLinkFilterErrorLine", [index + 1, srcLine]);
-          errors.push(line);
-        }
-      });
-    };
-
-    var errors = [];
-    checkRule(document.getElementById("opt_capture.downLink.file.extFilter").value);
-    if (errors.length) {
-      if (confirm(scrapbook.lang("OptionCaptureDownLinkFileExtFilterError", [errors.join('\n\n')]))) {
-        return false;
-      }
-    }
-
-    var errors = [];
-    checkRule(document.getElementById("opt_capture.downLink.urlFilter").value);
-    if (errors.length) {
-      if (confirm(scrapbook.lang("OptionCaptureDownLinkUrlFilterError", [errors.join('\n\n')]))) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
   function refreshForm() {
     renewCaptureSaveToDetails();
     renewCaptureSaveAsDetails();
+    verifySaveFolder();
+    verifySaveFilename();
     renewCaptureDownLinkDetails();
+    verifyDownLinkFileExtFilter();
+    verifyDownLinkDocUrlFilter();
+    verifyDownLinkUrlFilter();
+    verifyCaptureHelpers();
+    verifyAutoCapture();
+    document.getElementById('options').reportValidity();
   }
 
   function renewCaptureSaveToDetails() {
     const mode = document.getElementById("opt_capture.saveTo").value;
 
-    Array.prototype.forEach.call(document.querySelectorAll('.captureScrapbookFolder'), (elem) => {
+    for (const elem of document.querySelectorAll('.captureScrapbookFolder')) {
       elem.hidden = mode !== 'folder';
-    });
+    }
 
-    {
-      const elem = document.getElementById('opt_capture.saveAs');
-      elem.querySelector('[value="folder"]').disabled = mode === 'file';
-      if (elem.value === 'folder' && mode === 'file') {
-        elem.value = 'zip';
-      }
+    var elem = document.getElementById('opt_capture.saveAs');
+    elem.querySelector('[value="folder"]').disabled = mode === 'file';
+    if (elem.value === 'folder' && mode === 'file') {
+      elem.querySelector(':enabled').selected = true;
     }
   }
 
   function renewCaptureSaveAsDetails() {
     const mode = document.getElementById("opt_capture.saveAs").value;
 
-    Array.prototype.forEach.call(document.querySelectorAll('.captureMergeCssResources'), (elem) => {
+    for (const elem of document.querySelectorAll('.captureMergeCssResources')) {
       elem.hidden = mode !== 'singleHtml';
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('.captureSaveDataUriAsFile'), (elem) => {
+    }
+    for (const elem of document.querySelectorAll('.captureSaveDataUriAsFile')) {
       elem.hidden = mode === 'singleHtml';
-    });
+    }
   }
 
-  function verifySavePath(event) {
-    const elem = event.target;
+  function verifySavePath(elem) {
     if (elem.value) {
       // make sure it's a valid path for browser.downloads.download
       elem.value = elem.value.split(/[\\\/]/).map(x => scrapbook.validateFilename(x)).join('/');
@@ -277,16 +224,188 @@
     }
   }
 
+  function verifySaveFolder() {
+    const elem = document.getElementById("opt_capture.saveFolder");
+    verifySavePath(elem);
+  }
+
+  function verifySaveFilename() {
+    const elem = document.getElementById("opt_capture.saveFilename");
+    verifySavePath(elem);
+  }
+
   function renewCaptureDownLinkDetails() {
     var input = document.getElementById("opt_capture.downLink.file.mode");
-    Array.prototype.forEach.call(document.querySelectorAll('.captureDownLinkFileExtFilter'), (elem) => {
-      elem.hidden = input.value === 'none';
-    });
+    for (const elem of document.querySelectorAll('.captureDownLinkFileExtFilter')) {
+      elem.hidden = elem.disabled = input.value === 'none';
+    }
 
     var input = document.getElementById("opt_capture.downLink.doc.depth");
-    Array.prototype.forEach.call(document.querySelectorAll('.captureDownLinkDocUrlFilter'), (elem) => {
-      elem.hidden = !(input.valueAsNumber > 0);
-    });
+    for (const elem of document.querySelectorAll('.captureDownLinkDocUrlFilter')) {
+      elem.hidden = elem.disabled = !(input.valueAsNumber > 0);
+    }
+  }
+
+  function verifyDownLinkRules(srcText) {
+    const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
+    const fn = verifyDownLinkRules = (source) => {
+      // linefeeds are always '\n' for textarea value
+      const lines = source.split('\n');
+      for (let i = 0, I = lines.length; i < I; i++) {
+        let line = lines[i].trim();
+        if (!line || line.startsWith("#")) { continue; }
+
+        if (REGEX_PATTERN.test(line)) {
+          try {
+            new RegExp(RegExp.$1, RegExp.$2);
+          } catch (ex) {
+            return `Line ${i + 1}: ${ex.message}`;
+          }
+        }
+      }
+      return '';
+    };
+    return fn(srcText);
+  }
+
+  function verifyDownLinkUrlRules(srcText) {
+    const REGEX_SPACES = /\s+/;
+    const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
+    const fn = verifyDownLinkUrlRules = (source) => {
+      // linefeeds are always '\n' for textarea value
+      const lines = source.split('\n');
+      for (let i = 0, I = lines.length; i < I; i++) {
+        let line = lines[i].trim();
+        if (!line || line.startsWith("#")) { continue; }
+
+        line = line.split(REGEX_SPACES)[0];
+        if (REGEX_PATTERN.test(line)) {
+          try {
+            new RegExp(RegExp.$1, RegExp.$2);
+          } catch (ex) {
+            return `Line ${i + 1}: ${ex.message}`;
+          }
+        } else {
+          line = scrapbook.splitUrlByAnchor(line)[0];
+          try {
+            new URL(line);
+          } catch (ex) {
+            return `Line ${i + 1}: Invalid URL: ${line}`;
+          }
+        }
+      }
+      return '';
+    };
+    return fn(srcText);
+  }
+
+  function verifyDownLinkFileExtFilter() {
+    const elem = document.getElementById("opt_capture.downLink.file.extFilter");
+    elem.setCustomValidity(verifyDownLinkRules(elem.value));
+  }
+
+  function verifyDownLinkDocUrlFilter() {
+    const elem = document.getElementById("opt_capture.downLink.doc.urlFilter");
+    elem.setCustomValidity(verifyDownLinkUrlRules(elem.value));
+  }
+
+  function verifyDownLinkUrlFilter() {
+    const elem = document.getElementById("opt_capture.downLink.urlFilter");
+    elem.setCustomValidity(verifyDownLinkUrlRules(elem.value));
+  }
+
+  function verifyCaptureHelpers() {
+    const enabled = document.getElementById("opt_capture.helpersEnabled").checked;
+
+    const elem = document.getElementById("opt_capture.helpers");
+    elem.required = enabled;
+
+    const json = elem.value;
+    if (json) {
+      try {
+        const configs = JSON.parse(json);
+        if (!Array.isArray(configs)) {
+          throw new Error('Invalid array');
+        }
+
+        for (let i = 0, I = configs.length; i < I; i++) {
+          try {
+            const config = configs[i];
+            if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+              throw new Error(`Invalid object`);
+            }
+            if (config.pattern) {
+              if (typeof config.pattern !== 'string') {
+                throw new Error(`Pattern must be a string`);
+              }
+              if (/^\/(.*)\/([a-z]*)$/.test(config.pattern)) {
+                try {
+                  new RegExp(RegExp.$1, RegExp.$2);
+                } catch (ex) {
+                  throw new Error(`Invalid pattern: ${ex.message}`);
+                }
+              } else {
+                throw new Error(`Invalid pattern: Unsupported format.`);
+              }
+            }
+          } catch (ex) {
+            throw new Error(`Helper[${i}]: ${ex.message}`);
+          }
+        }
+      } catch (ex) {
+        elem.setCustomValidity(ex.message);
+        return;
+      }
+    }
+
+    elem.setCustomValidity('');
+  }
+
+  function verifyAutoCapture() {
+    const enabled = document.getElementById("opt_autocapture.enabled").checked;
+
+    const elem = document.getElementById("opt_autocapture.rules");
+    elem.required = enabled;
+
+    const json = elem.value;
+    if (json) {
+      try {
+        const configs = JSON.parse(json);
+        if (!Array.isArray(configs)) {
+          throw new Error('Invalid array');
+        }
+
+        for (let i = 0, I = configs.length; i < I; i++) {
+          try {
+            const config = configs[i];
+            if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+              throw new Error(`Invalid object`);
+            }
+            if (config.pattern) {
+              if (typeof config.pattern !== 'string') {
+                throw new Error(`Pattern must be a string`);
+              }
+              if (/^\/(.*)\/([a-z]*)$/.test(config.pattern)) {
+                try {
+                  new RegExp(RegExp.$1, RegExp.$2);
+                } catch (ex) {
+                  throw new Error(`Invalid pattern: ${ex.message}`);
+                }
+              } else {
+                throw new Error(`Invalid pattern: Unsupported format.`);
+              }
+            }
+          } catch (ex) {
+            throw new Error(`Config[${i}]: ${ex.message}`);
+          }
+        }
+      } catch (ex) {
+        elem.setCustomValidity(ex.message);
+        return;
+      }
+    }
+
+    elem.setCustomValidity('');
   }
 
   async function openIndexer() {
@@ -371,11 +490,11 @@
     });
   }
 
-  function onToggleTooltip(elem) {
-    if (!onToggleTooltip.tooltipMap) {
-      onToggleTooltip.tooltipMap = new WeakMap();
+  function toggleTooltip(elem) {
+    if (!toggleTooltip.tooltipMap) {
+      toggleTooltip.tooltipMap = new WeakMap();
     }
-    const tooltipMap = onToggleTooltip.tooltipMap;
+    const tooltipMap = toggleTooltip.tooltipMap;
 
     let tooltip = tooltipMap.get(elem);
     if (tooltip) {
@@ -389,110 +508,137 @@
     }
   }
 
+  function onOpenIndexerClick(event) {
+    event.preventDefault();
+    openIndexer();
+  }
+
+  function onOpenCheckerClick(event) {
+    event.preventDefault();
+    openChecker();
+  }
+
+  async function onSubmit(event) {
+    event.preventDefault();
+
+    // verify the form
+    refreshForm();
+
+    // save options
+    const keys = {};
+    for (const key in scrapbook.DEFAULT_OPTIONS) {
+      // Overwrite only keys with a defined value so that
+      // keys not listed in the options page are not nullified.
+      // In Chromium, storageArea.set({key: undefined}) does not store to key.
+      // In Firefox, storageArea.set({key: undefined}) stores null to key.
+      const value = getOptionFromDocument(key);
+      if (typeof value !== "undefined") {
+        keys[key] = value;
+      }
+    }
+    await scrapbook.setOptions(keys);
+    return closeWindow();
+  }
+
+  function onResetClick(event) {
+    event.preventDefault();
+    resetOptions();
+    refreshForm();
+  }
+
+  function onExportClick(event) {
+    event.preventDefault();
+    exportOptions();
+  }
+
+  function onImportClick(event) {
+    event.preventDefault();
+    document.getElementById("import-input").click();
+  }
+
+  async function onImportInputChange(event) {
+    event.preventDefault();
+    const file = event.target.files[0];
+    await importOptions(file);
+    refreshForm();
+  }
+
+  function onDetailsToggle(event) {
+    saveDetailStatus();
+  }
+
+  function onTooltipClick(event) {
+    event.preventDefault();
+    const elem = event.currentTarget;
+    toggleTooltip(elem);
+  }
+
+  function onInvalid(event) {
+    const elem = event.target;
+    const closedParentDetails = elem.closest('details:not([open])');
+    if (closedParentDetails) {
+      closedParentDetails.setAttribute('open', '');
+    }
+  }
+
   window.addEventListener("DOMContentLoaded", async (event) => {
     // load languages
     scrapbook.loadLanguages(document);
     document.getElementById("optionServerUrlTooltip").setAttribute('data-tooltip', scrapbook.lang('OptionServerUrlTooltip', [scrapbook.BACKEND_MIN_VERSION]));
 
-    // disable unsupported options
-    // Hiding these options will get following elements shown bad since
-    // :first-child doesn't apply to them.
-    if (!browser.browserAction.setBadgeText) {
-      document.getElementById('opt_scrapbook.notifyPageCaptured').disabled = true;
+    // hide unsupported options
+    if (!browser.browserAction || !browser.browserAction.setBadgeText) {
+      for (const elem of document.querySelectorAll('.uiNotifyPageCaptured')) {
+        elem.hidden = true;
+      }
     }
 
     // load default options
-    await initDefaultOptions();
-    refreshForm();
+    await initOptions();
 
     // load detail status
     await loadDetailStatus();
 
     // event handlers
     document.getElementById("opt_capture.saveTo").addEventListener("change", renewCaptureSaveToDetails);
-
     document.getElementById("opt_capture.saveAs").addEventListener("change", renewCaptureSaveAsDetails);
-
-    document.getElementById("opt_capture.saveFolder").addEventListener("change", verifySavePath);
-
-    document.getElementById("opt_capture.saveFilename").addEventListener("change", verifySavePath);
+    document.getElementById("opt_capture.saveFolder").addEventListener("change", verifySaveFolder);
+    document.getElementById("opt_capture.saveFilename").addEventListener("change", verifySaveFilename);
 
     document.getElementById("opt_capture.downLink.file.mode").addEventListener("change", renewCaptureDownLinkDetails);
-
     document.getElementById("opt_capture.downLink.doc.depth").addEventListener("change", renewCaptureDownLinkDetails);
+    document.getElementById("opt_capture.downLink.file.extFilter").addEventListener("change", verifyDownLinkFileExtFilter);
+    document.getElementById("opt_capture.downLink.doc.urlFilter").addEventListener("change", verifyDownLinkDocUrlFilter);
+    document.getElementById("opt_capture.downLink.urlFilter").addEventListener("change", verifyDownLinkUrlFilter);
 
-    document.getElementById("options").addEventListener("submit", async (event) => {
-      event.preventDefault();
+    document.getElementById("opt_capture.helpersEnabled").addEventListener("change", verifyCaptureHelpers);
+    document.getElementById("opt_capture.helpers").addEventListener("change", verifyCaptureHelpers);
+    document.getElementById("opt_autocapture.enabled").addEventListener("change", verifyAutoCapture);
+    document.getElementById("opt_autocapture.rules").addEventListener("change", verifyAutoCapture);
 
-      // verify the form
-      if (!verifyHelpers()) {
-        return;
-      }
-      if (!verifyDownLinkFilters()) {
-        return;
-      }
+    document.getElementById("openIndexer").addEventListener("click", onOpenIndexerClick);
+    document.getElementById("openChecker").addEventListener("click", onOpenCheckerClick);
 
-      // save options
-      for (const id in scrapbook.options) {
-        // Overwrite only keys with a defined value so that
-        // keys not listed in the options page are not nullified.
-        // In Chromium, storageArea.set({key: undefined}) does not store to key.
-        // In Firefox, storageArea.set({key: undefined}) stores null to key.
-        const value = getOptionFromDocument(id);
-        if (typeof value !== "undefined") {
-          scrapbook.options[id] = value;
-        }
-      }
-      await scrapbook.saveOptions();
-      return closeWindow();
-    });
-
-    document.getElementById("openIndexer").addEventListener("click", (event) => {
-      event.preventDefault();
-      openIndexer();
-    });
-
-    document.getElementById("openChecker").addEventListener("click", (event) => {
-      event.preventDefault();
-      openChecker();
-    });
-
-    document.getElementById("reset").addEventListener("click", (event) => {
-      event.preventDefault();
-      resetOptions();
-      refreshForm();
-    });
-
-    document.getElementById("export").addEventListener("click", (event) => {
-      event.preventDefault();
-      exportOptions();
-    });
-
-    document.getElementById("import").addEventListener("click", (event) => {
-      event.preventDefault();
-      document.getElementById("import-input").click();
-    });
-
-    document.getElementById("import-input").addEventListener("change", async (event) => {
-      event.preventDefault();
-      const file = event.target.files[0];
-      await importOptions(file);
-      refreshForm();
-    });
+    document.getElementById("options").addEventListener("submit", onSubmit);
+    document.getElementById("reset").addEventListener("click", onResetClick);
+    document.getElementById("export").addEventListener("click", onExportClick);
+    document.getElementById("import").addEventListener("click", onImportClick);
+    document.getElementById("import-input").addEventListener("change", onImportInputChange);
 
     for (const elem of document.querySelectorAll('details')) {
-      elem.addEventListener("toggle", (event) => {
-        saveDetailStatus();
-      });
+      elem.addEventListener("toggle", onDetailsToggle);
     }
 
     for (const elem of document.querySelectorAll('a[data-tooltip]')) {
-      elem.addEventListener("click", (event) => {
-        event.preventDefault();
-        const elem = event.currentTarget;
-        onToggleTooltip(elem);
-      });
+      elem.addEventListener("click", onTooltipClick);
     }
+
+    for (const elem of document.querySelectorAll(':valid, :invalid')) {
+      elem.addEventListener("invalid", onInvalid);
+    }
+
+    // refresh form
+    refreshForm();
   });
 
 }));

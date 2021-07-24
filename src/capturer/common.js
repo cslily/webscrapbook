@@ -23,8 +23,6 @@
 
   'use strict';
 
-  const DOMPARSER_SUPPORT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/xml', 'application/xml', 'image/svg+xml']);
-
   const REWRITABLE_SPECIAL_OBJECTS = new Set([false, 'adoptedStyleSheet']);
 
   const REMOVE_HIDDEN_EXCLUDE_HTML = new Set(["html", "head", "title", "meta", "link", "style", "script", "body", "noscript", "template", "source", "track"]);
@@ -166,7 +164,7 @@
       return capturer.invoke("downloadFile", params)
         .then(response => {
           return Object.assign({}, response, {
-            url: response.url + (response.url.startsWith('data:') ? '' : scrapbook.splitUrlByAnchor(url)[1]),
+            url: capturer.getRedirectedUrl(response.url, scrapbook.splitUrlByAnchor(url)[1]),
           });
         })
         .catch((ex) => {
@@ -181,26 +179,12 @@
     // e.g. cloned iframes has no content, cloned canvas has no image,
     // and cloned form elements has no current status.
     const cloneNodeMapping = (node, deep = false) => {
-      const newNode = newDoc.importNode(node, deep);
-      origNodeMap.set(newNode, node);
-      clonedNodeMap.set(node, newNode);
-
-      // map descendants
-      if (deep) {
-        const doc = node.ownerDocument;
-        const walker1 = doc.createNodeIterator(node);
-        const walker2 = newDoc.createNodeIterator(newNode);
-        let node1 = walker1.nextNode();
-        let node2 = walker2.nextNode();
-        while (node1) {
-          origNodeMap.set(node2, node1);
-          clonedNodeMap.set(node1, node2);
-          node1 = walker1.nextNode();
-          node2 = walker2.nextNode();
-        }
-      }
-
-      return newNode;
+      return scrapbook.cloneNode(node, deep, {
+        newDoc,
+        origNodeMap,
+        clonedNodeMap,
+        includeShadowDom: options["capture.shadowDom"] === "save",
+      });
     };
 
     const captureRecordAddedNode = (elem, record = options["capture.recordRewrites"]) => {
@@ -413,8 +397,8 @@
     const rewriteRecursively = (elem, rootName, callback) => {
       const nodeName = elem.nodeName.toLowerCase();
 
-      // switch rootName for certain embedded "document"
-      if (["svg", "math"].includes(nodeName)) {
+      // switch rootName for a foreign element
+      if (!rootName && ["svg", "math"].includes(nodeName)) {
         rootName = nodeName;
       }
 
@@ -436,17 +420,18 @@
       return result;
     };
 
-    const rewriteNode = (elem, rootName) => {
+    const rewriteNode = (node, rootName) => {
       // skip non-element nodes
-      if (elem.nodeType !== 1) {
-        return elem;
+      if (node.nodeType !== 1) {
+        return node;
       }
 
-      // skip a special elements and its descendants
-      if (!REWRITABLE_SPECIAL_OBJECTS.has(scrapbook.getScrapbookObjectType(elem))) {
-        return elem;
+      // skip processing a special node
+      if (!REWRITABLE_SPECIAL_OBJECTS.has(scrapbook.getScrapbookObjectType(node))) {
+        return node;
       }
 
+      const elem = node;
       const elemOrig = origNodeMap.get(elem);
 
       // remove hidden elements
@@ -610,12 +595,18 @@
                 if (metaRefresh.url) {
                   // meta refresh is relative to document URL rather than base URL
                   const url = rewriteLocalLink(metaRefresh.url, docUrl);
-                  captureRewriteAttr(elem, "content", metaRefresh.time + (url ? ";url=" + url : ""));
+                  captureRewriteAttr(elem, "content", metaRefresh.time + (url ? "; url=" + url : ""));
                 }
               } else if (elem.getAttribute("http-equiv").toLowerCase() == "content-security-policy") {
                 // content security policy could make resources not loaded when viewed offline
-                if (options["capture.removeIntegrity"]) {
-                  captureRewriteAttr(elem, "http-equiv", null);
+                switch (options["capture.contentSecurityPolicy"]) {
+                  case "save":
+                    // do nothing
+                    break;
+                  case "remove":
+                  default:
+                    captureRemoveNode(elem);
+                    return;
                 }
               }
             } else if (elem.hasAttribute("charset")) {
@@ -629,9 +620,20 @@
           }
 
           case "link": {
-            if (!elem.hasAttribute("href")) { break; }
-            const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("href"), refUrl);
-            captureRewriteAttr(elem, "href", rewriteUrl);
+            if (elem.hasAttribute("href")) {
+              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("href"), refUrl);
+              captureRewriteAttr(elem, "href", rewriteUrl);
+            }
+
+            if (elem.hasAttribute("imagesrcset")) {
+              const rewriteSrcset = scrapbook.rewriteSrcset(elem.getAttribute("imagesrcset"), (url) => {
+                return capturer.resolveRelativeUrl(url, refUrl);
+              });
+              captureRewriteAttr(elem, "imagesrcset", rewriteSrcset);
+            }
+
+            // integrity won't work due to rewriting or crossorigin issue
+            captureRewriteAttr(elem, "integrity", null);
 
             if (elem.matches('[rel~="stylesheet"]')) {
               // styles: link element
@@ -701,6 +703,9 @@
                       },
                     });
                   });
+
+                  // remove crossorigin as the origin has changed
+                  captureRewriteAttr(elem, "crossorigin", null);
                   break;
               }
               break;
@@ -709,7 +714,7 @@
               switch (options["capture.favicon"]) {
                 case "link":
                   if (typeof favIconUrl === 'undefined') {
-                    favIconUrl = rewriteUrl;
+                    favIconUrl = elem.getAttribute("href");
                   }
                   break;
                 case "blank":
@@ -730,7 +735,7 @@
                 default:
                   let useFavIcon = false;
                   if (typeof favIconUrl === 'undefined') {
-                    favIconUrl = rewriteUrl;
+                    favIconUrl = elem.getAttribute("href");
                     useFavIcon = true;
                   }
                   tasks.push(async () => {
@@ -748,11 +753,38 @@
                     }
                     return response;
                   });
+
+                  // remove crossorigin as the origin has changed
+                  captureRewriteAttr(elem, "crossorigin", null);
                   break;
               }
-            } else if (elem.matches('[rel~="preload"]')) {
+            } else if (elem.matches('[rel~="preload"], [rel~="modulepreload"], [rel~="dns-prefetch"], [rel~="preconnect"]')) {
               // @TODO: handle preloads according to its "as" attribute
-              captureRewriteAttr(elem, "href", null);
+              switch (options["capture.preload"]) {
+                case "blank":
+                  // HTML 5.1 2nd Edition / W3C Recommendation:
+                  // If the href attribute is absent, then the element does not define a link.
+                  captureRewriteAttr(elem, "href", null);
+                  captureRewriteAttr(elem, "imagesrcset", null);
+                  break;
+                case "remove":
+                default:
+                  captureRemoveNode(elem);
+                  return;
+              }
+            } else if (elem.matches('[rel~="prefetch"], [rel~="prerender"]')) {
+              // @TODO: handle prefetches according to its "as" attribute
+              switch (options["capture.prefetch"]) {
+                case "blank":
+                  // HTML 5.1 2nd Edition / W3C Recommendation:
+                  // If the href attribute is absent, then the element does not define a link.
+                  captureRewriteAttr(elem, "href", null);
+                  break;
+                case "remove":
+                default:
+                  captureRemoveNode(elem);
+                  return;
+              }
             }
             break;
           }
@@ -814,6 +846,9 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
+            // integrity won't work due to rewriting or crossorigin issue
+            captureRewriteAttr(elem, "integrity", null);
+
             switch (options["capture.script"]) {
               case "link":
                 // do nothing
@@ -845,6 +880,9 @@
                     return response;
                   });
                 }
+
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
 
@@ -865,12 +903,11 @@
               case "save":
               default:
                 if (capturer.isNoscriptEscaped) {
-                  let key = scrapbook.getUuid();
-                  specialContentMap.set(key, "noscript");
-                  const replaceElem = document.createElement(`jc-${key}`);
-                  replaceElem.innerHTML = elem.textContent;
-                  elem.parentNode.replaceChild(replaceElem, elem);
-                  rewriteRecursively(replaceElem, rootName, rewriteNode);
+                  const newElem = newDoc.createElement('scrapbook-noscript');
+                  escapedNoscriptList.push(newElem);
+                  newElem.innerHTML = elem.textContent;
+                  elem.replaceWith(newElem);
+                  rewriteRecursively(newElem, rootName, rewriteNode);
                   return;
                 }
                 break;
@@ -1015,7 +1052,7 @@
                       options["capture.saveDataUriAsSrcdoc"]) {
                     const file = scrapbook.dataUriToFile(response.url);
                     const {type: mime, parameters: {charset}} = scrapbook.parseHeaderContentType(file.type);
-                    if (["text/html", "application/xhtml+xml", "image/svg+xml"].includes(mime)) {
+                    if (mime === "text/html") {
                       // assume the charset is UTF-8 if not defined
                       const content = await scrapbook.readFileAsText(file, charset || "UTF-8");
                       captureRewriteAttr(frame, "srcdoc", content);
@@ -1246,6 +1283,9 @@
                     return response;
                   });
                 }
+
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1253,49 +1293,49 @@
 
           // images: picture
           case "picture": {
-            Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-              const rewriteSrcset = scrapbook.rewriteSrcset(elem.getAttribute("srcset"), (url) => {
+            for (const subElem of elem.querySelectorAll('source[srcset]')) {
+              const rewriteSrcset = scrapbook.rewriteSrcset(subElem.getAttribute("srcset"), (url) => {
                 return capturer.resolveRelativeUrl(url, refUrl);
               });
-              captureRewriteAttr(elem, "srcset", rewriteSrcset);
-            }, this);
+              captureRewriteAttr(subElem, "srcset", rewriteSrcset);
+            }
 
             switch (options["capture.image"]) {
               case "link":
                 // do nothing
                 break;
               case "blank":
-                Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-                  captureRewriteAttr(elem, "srcset", null);
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[srcset]')) {
+                  captureRewriteAttr(subElem, "srcset", null);
+                }
                 break;
               case "remove":
                 captureRemoveNode(elem);
                 return;
               case "save-current":
                 if (!isHeadless) {
-                  Array.prototype.forEach.call(elem.querySelectorAll('img'), (elem) => {
-                    const elemOrig = origNodeMap.get(elem);
+                  for (const subElem of elem.querySelectorAll('img')) {
+                    const subElemOrig = origNodeMap.get(subElem);
 
-                    if (elemOrig && elemOrig.currentSrc) {
-                      // elem will be further processed in the following loop that handles "img"
-                      captureRewriteAttr(elem, "src", elemOrig.currentSrc);
-                      captureRewriteAttr(elem, "srcset", null);
+                    if (subElemOrig && subElemOrig.currentSrc) {
+                      // subElem will be further processed in the following loop that handles "img"
+                      captureRewriteAttr(subElem, "src", subElemOrig.currentSrc);
+                      captureRewriteAttr(subElem, "srcset", null);
                     }
-                  }, this);
+                  }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-                    captureRemoveNode(elem);
-                  }, this);
+                  for (const subElem of elem.querySelectorAll('source[srcset]')) {
+                    captureRemoveNode(subElem);
+                  }
 
                   break;
                 }
                 // Headless capture doesn't support currentSrc, fallback to "save".
               case "save":
               default:
-                Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[srcset]')) {
                   tasks.push(async () => {
-                    const response = await scrapbook.rewriteSrcset(elem.getAttribute("srcset"), async (url) => {
+                    const response = await scrapbook.rewriteSrcset(subElem.getAttribute("srcset"), async (url) => {
                       const rewriteUrl = capturer.resolveRelativeUrl(url, refUrl);
                       return (await downloadFile({
                         url: rewriteUrl,
@@ -1304,10 +1344,10 @@
                         options,
                       })).url;
                     });
-                    captureRewriteAttr(elem, "srcset", response);
+                    captureRewriteAttr(subElem, "srcset", response);
                     return response;
                   });
-                }, this);
+                }
                 break;
             }
             break;
@@ -1320,10 +1360,10 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
-            Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("src"), refUrl);
-              captureRewriteAttr(elem, "src", rewriteUrl);
-            }, this);
+            for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+              const rewriteUrl = capturer.resolveRelativeUrl(subElem.getAttribute("src"), refUrl);
+              captureRewriteAttr(subElem, "src", rewriteUrl);
+            }
 
             switch (options["capture.audio"]) {
               case "link":
@@ -1336,9 +1376,9 @@
 
                 // HTML 5.1 2nd Edition / W3C Recommendation:
                 // The src attribute must be present and be a valid non-empty URL.
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-                  captureRewriteAttr(elem, "src", "about:blank");
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+                  captureRewriteAttr(subElem, "src", "about:blank");
+                }
 
                 break;
               case "remove":
@@ -1348,9 +1388,9 @@
                 if (!isHeadless) {
                   if (elemOrig && elemOrig.currentSrc) {
                     const url = elemOrig.currentSrc;
-                    Array.prototype.forEach.call(elem.querySelectorAll('source[src]'), (elem) => {
-                      captureRemoveNode(elem);
-                    }, this);
+                    for (const subElem of elem.querySelectorAll('source[src]')) {
+                      captureRemoveNode(subElem);
+                    }
                     tasks.push(async () => {
                       const response = await downloadFile({
                         url,
@@ -1363,18 +1403,18 @@
                     });
                   }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('track[src]'), (elem) => {
+                  for (const subElem of elem.querySelectorAll('track[src]')) {
                     tasks.push(async () => {
                       const response = await downloadFile({
-                        url: elem.getAttribute("src"),
+                        url: subElem.getAttribute("src"),
                         refUrl,
                         settings,
                         options,
                       });
-                      captureRewriteAttr(elem, "src", response.url);
+                      captureRewriteAttr(subElem, "src", response.url);
                       return response;
                     });
-                  }, this);
+                  }
 
                   break;
                 }
@@ -1394,19 +1434,21 @@
                   });
                 }
 
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
                   tasks.push(async () => {
                     const response = await downloadFile({
-                      url: elem.getAttribute("src"),
+                      url: subElem.getAttribute("src"),
                       refUrl,
                       settings,
                       options,
                     });
-                    captureRewriteAttr(elem, "src", response.url);
+                    captureRewriteAttr(subElem, "src", response.url);
                     return response;
                   });
-                }, this);
+                }
 
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1424,10 +1466,10 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
-            Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("src"), refUrl);
-              captureRewriteAttr(elem, "src", rewriteUrl);
-            }, this);
+            for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+              const rewriteUrl = capturer.resolveRelativeUrl(subElem.getAttribute("src"), refUrl);
+              captureRewriteAttr(subElem, "src", rewriteUrl);
+            }
 
             switch (options["capture.video"]) {
               case "link":
@@ -1446,9 +1488,9 @@
 
                 // HTML 5.1 2nd Edition / W3C Recommendation:
                 // The src attribute must be present and be a valid non-empty URL.
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-                  captureRewriteAttr(elem, "src", "about:blank");
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+                  captureRewriteAttr(subElem, "src", "about:blank");
+                }
 
                 break;
               case "remove":
@@ -1471,9 +1513,9 @@
 
                   if (elemOrig && elemOrig.currentSrc) {
                     const url = elemOrig.currentSrc;
-                    Array.prototype.forEach.call(elem.querySelectorAll('source[src]'), (elem) => {
-                      captureRemoveNode(elem);
-                    }, this);
+                    for (const subElem of elem.querySelectorAll('source[src]')) {
+                      captureRemoveNode(subElem);
+                    }
                     tasks.push(async () => {
                       const response = await downloadFile({
                         url,
@@ -1486,18 +1528,18 @@
                     });
                   }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('track[src]'), (elem) => {
+                  for (const subElem of elem.querySelectorAll('track[src]')) {
                     tasks.push(async () => {
                       const response = await downloadFile({
-                        url: elem.getAttribute("src"),
+                        url: subElem.getAttribute("src"),
                         refUrl,
                         settings,
                         options,
                       });
-                      captureRewriteAttr(elem, "src", response.url);
+                      captureRewriteAttr(subElem, "src", response.url);
                       return response;
                     });
-                  }, this);
+                  }
 
                   break;
                 }
@@ -1530,19 +1572,21 @@
                   });
                 }
 
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
                   tasks.push(async () => {
                     const response = await downloadFile({
-                      url: elem.getAttribute("src"),
+                      url: subElem.getAttribute("src"),
                       refUrl,
                       settings,
                       options,
                     });
-                    captureRewriteAttr(elem, "src", response.url);
+                    captureRewriteAttr(subElem, "src", response.url);
                     return response;
                   });
-                }, this);
+                }
 
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1613,14 +1657,61 @@
               default:
                 if (elem.hasAttribute("data")) {
                   tasks.push(async () => {
-                    const response = await downloadFile({
-                      url: elem.getAttribute("data"),
-                      refUrl,
-                      settings,
-                      options,
+                    const sourceUrl = elem.getAttribute("data");
+
+                    // skip further processing and keep current src
+                    // (point to self, or not resolvable)
+                    if (!scrapbook.isUrlAbsolute(sourceUrl)) {
+                      return;
+                    }
+
+                    const [sourceUrlMain, sourceUrlHash] = scrapbook.splitUrlByAnchor(sourceUrl);
+
+                    // headlessly capture
+                    const objectSettings = Object.assign({}, settings, {
+                      recurseChain: [...settings.recurseChain, refUrl],
+                      isMainFrame: false,
+                      fullPage: true,
+                      usedCssFontUrl: undefined,
+                      usedCssImageUrl: undefined,
+                      isHeadless: true,
                     });
-                    captureRewriteAttr(elem, "data", response.url);
-                    return response;
+
+                    let objectOptions = options;
+
+                    // special handling for data URL
+                    if (sourceUrl.startsWith("data:") &&
+                        !options["capture.saveDataUriAsFile"] &&
+                        options["capture.saveAs"] !== "singleHtml") {
+                      // Save object document and inner URLs as data URL since data URL
+                      // is null origin and no relative URL is allowed in it.
+                      objectOptions = Object.assign({}, options, {
+                        "capture.saveAs": "singleHtml",
+                      });
+                    }
+
+                    // check circular reference if saving as data URL
+                    if (objectOptions["capture.saveAs"] === "singleHtml") {
+                      if (objectSettings.recurseChain.includes(sourceUrlMain)) {
+                        console.warn(scrapbook.lang("WarnCaptureCircular", [refUrl, sourceUrlMain]));
+                        captureRewriteAttr(elem, "data", `urn:scrapbook:download:circular:url:${sourceUrl}`);
+                        return;
+                      }
+                    }
+
+                    return capturer.invoke("captureUrl", {
+                      url: sourceUrl,
+                      refUrl,
+                      settings: objectSettings,
+                      options: objectOptions,
+                    }).catch(async (ex) => {
+                      console.error(ex);
+                      warn(scrapbook.lang("ErrorFileDownloadError", [sourceUrl, ex.message]));
+                      return {url: capturer.getErrorUrl(sourceUrl, options), error: {message: ex.message}};
+                    }).then(async (response) => {
+                      captureRewriteAttr(elem, "data", response.url);
+                      return response;
+                    });
                   });
                 }
                 break;
@@ -1724,6 +1815,7 @@
             break;
           }
 
+          // form: input
           case "input": {
             switch (elem.type.toLowerCase()) {
               // images: input
@@ -1762,23 +1854,70 @@
                 }
                 break;
               }
-              // form: input (file, password)
-              case "password":
+              // form: input (file)
               case "file": {
-                // always forget
+                break;
+              }
+              // form: input (password)
+              case "password": {
+                switch (options["capture.formStatus"]) {
+                  case "save-all":
+                    if (elemOrig) {
+                      const value = elemOrig.value;
+                      if (value !== elem.getAttribute('value')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-value", value);
+                        requireBasicLoader = true;
+                      }
+                    }
+                    break;
+                  case "keep-all":
+                  case "html-all":
+                    if (elemOrig) {
+                      captureRewriteAttr(elem, "value", elemOrig.value);
+                    }
+                    break;
+                  case "save":
+                  case "keep":
+                  case "html":
+                  case "reset":
+                  default:
+                    // do nothing
+                    break;
+                }
                 break;
               }
               // form: input (radio, checkbox)
               case "radio":
               case "checkbox": {
                 switch (options["capture.formStatus"]) {
-                  case "keep":
+                  case "save-all":
+                  case "save":
                     if (elemOrig) {
-                      captureRewriteAttr(elem, "checked", elemOrig.checked ? "checked" : null);
-                      if (elemOrig.indeterminate && elem.type.toLowerCase() === 'checkbox') {
+                      const checked = elemOrig.checked;
+                      if (checked !== elem.hasAttribute('checked')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-checked", checked);
+                        requireBasicLoader = true;
+                      }
+                      const indeterminate = elemOrig.indeterminate;
+                      if (indeterminate && elem.type.toLowerCase() === 'checkbox') {
                         captureRewriteAttr(elem, "data-scrapbook-input-indeterminate", "");
                         requireBasicLoader = true;
                       }
+                    }
+                    break;
+                  case "keep-all":
+                  case "keep":
+                    if (elemOrig) {
+                      const indeterminate = elemOrig.indeterminate;
+                      if (indeterminate && elem.type.toLowerCase() === 'checkbox') {
+                        captureRewriteAttr(elem, "data-scrapbook-input-indeterminate", "");
+                        requireBasicLoader = true;
+                      }
+                    }
+                  case "html-all":
+                  case "html":
+                    if (elemOrig) {
+                      captureRewriteAttr(elem, "checked", elemOrig.checked ? "checked" : null);
                     }
                     break;
                   case "reset":
@@ -1791,7 +1930,20 @@
               // form: input (other)
               default: {
                 switch (options["capture.formStatus"]) {
+                  case "save-all":
+                  case "save":
+                    if (elemOrig) {
+                      const value = elemOrig.value;
+                      if (value !== elem.getAttribute('value')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-value", value);
+                        requireBasicLoader = true;
+                      }
+                    }
+                    break;
+                  case "keep-all":
                   case "keep":
+                  case "html-all":
+                  case "html":
                     if (elemOrig) {
                       captureRewriteAttr(elem, "value", elemOrig.value);
                     }
@@ -1810,7 +1962,20 @@
           // form: option
           case "option": {
             switch (options["capture.formStatus"]) {
+              case "save-all":
+              case "save":
+                if (elemOrig) {
+                  const selected = elemOrig.selected;
+                  if (selected !== elem.hasAttribute('selected')) {
+                    captureRewriteAttr(elem, "data-scrapbook-option-selected", selected);
+                    requireBasicLoader = true;
+                  }
+                }
+                break;
+              case "keep-all":
               case "keep":
+              case "html-all":
+              case "html":
                 if (elemOrig) {
                   captureRewriteAttr(elem, "selected", elemOrig.selected ? "selected" : null);
                 }
@@ -1826,7 +1991,20 @@
           // form: textarea
           case "textarea": {
             switch (options["capture.formStatus"]) {
+              case "save-all":
+              case "save":
+                if (elemOrig) {
+                  const value = elemOrig.value;
+                  if (value !== elem.textContent) {
+                    captureRewriteAttr(elem, "data-scrapbook-textarea-value", value);
+                    requireBasicLoader = true;
+                  }
+                }
+                break;
+              case "keep-all":
               case "keep":
+              case "html-all":
+              case "html":
                 if (elemOrig) {
                   captureRewriteTextContent(elem, elemOrig.value);
                 }
@@ -1848,39 +2026,26 @@
         }
 
         // handle shadow DOM
-        switch (options["capture.shadowDom"]) {
-          case "save": {
-            const shadowRootOrig = elemOrig && elemOrig.shadowRoot;
-            if (!shadowRootOrig) { break; }
-
-            const shadowRoot = elem.attachShadow({mode: 'open'});
-            origNodeMap.set(shadowRoot, shadowRootOrig);
-            clonedNodeMap.set(shadowRootOrig, shadowRoot);
-            for (const elem of shadowRootOrig.childNodes) {
-              shadowRoot.appendChild(cloneNodeMapping(elem, true));
-            }
-
+        {
+          const shadowRoot = elem.shadowRoot;
+          if (shadowRoot) {
+            const shadowRootOrig = origNodeMap.get(shadowRoot);
             addAdoptedStyleSheets(shadowRootOrig, shadowRoot);
-            rewriteRecursively(shadowRoot, shadowRoot.nodeName.toLowerCase(), rewriteNode);
-            shadowRootList.push({
-              host: elem,
-              shadowRoot,
-            });
+            rewriteRecursively(shadowRoot, rootName, rewriteNode);
+            shadowRootList.push(shadowRoot);
             requireBasicLoader = true;
-            break;
-          }
-          default: {
-            break;
           }
         }
 
-        // handle integrity and crossorigin
-        // We have to remove integrity check because we could modify the content
-        // and they might not work correctly in the offline environment.
-        if (options["capture.removeIntegrity"]) {
-          captureRewriteAttr(elem, "integrity", null);
-          captureRewriteAttr(elem, "crossorigin", null);
-          captureRewriteAttr(elem, "nonce", null); // this is meaningless as CSP is removed
+        // handle nonce
+        switch (options["capture.contentSecurityPolicy"]) {
+          case "save":
+            // do nothing
+            break;
+          case "remove":
+          default:
+            captureRewriteAttr(elem, "nonce", null); // this is meaningless as CSP is removed
+            break;
         }
       }
 
@@ -2001,15 +2166,6 @@
     // alias of baseUrl for resolving links and resources
     const refUrl = baseUrl;
 
-    // create a new document to replicate nodes via import
-    const newDoc = (new DOMParser()).parseFromString(
-      '<' + docElemNode.nodeName.toLowerCase() + '/>',
-      DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
-    );
-    while (newDoc.firstChild) {
-      newDoc.removeChild(newDoc.firstChild);
-    }
-
     if (isMainPage && isMainFrame) {
       settings.indexFilename = await capturer.formatIndexFilename({
         title: settings.title || doc.title || scrapbook.filenameParts(scrapbook.urlToFilename(docUrl))[0] || "untitled",
@@ -2025,7 +2181,7 @@
     const registry = await capturer.invoke("registerDocument", {
       docUrl,
       mime,
-      role: ["singleHtml"].includes(options["capture.saveAs"]) ? undefined :
+      role: options["capture.saveAs"] === "singleHtml" ? undefined :
           (isMainFrame || isHeadless) ? "document" : `document-${scrapbook.getUuid()}`,
       settings,
       options,
@@ -2034,7 +2190,7 @@
     // if a previous registry exists, return it
     if (registry.isDuplicate) {
       return Object.assign({}, registry, {
-        url: registry.url + (registry.url.startsWith('data:') ? '' : docUrlHash),
+        url: capturer.getRedirectedUrl(registry.url, docUrlHash),
       });
     }
 
@@ -2048,12 +2204,11 @@
     // construct the cloned node tree
     const origNodeMap = new WeakMap();
     const clonedNodeMap = new WeakMap();
-    const specialContentMap = new Map();
+    const escapedNoscriptList = [];
     const shadowRootList = [];
 
-    // add newDoc as the topmost cloned node
-    origNodeMap.set(newDoc, doc);
-    clonedNodeMap.set(doc, newDoc);
+    // create a new document to replicate nodes via import
+    const newDoc = scrapbook.cloneDocument(doc, {origNodeMap, clonedNodeMap});
 
     let rootNode, headNode;
     let selection = settings.fullPage ? null : doc.getSelection();
@@ -2327,7 +2482,7 @@
     let metaCharsetNode;
     let favIconUrl;
     let requireBasicLoader = false;
-    rewriteRecursively(rootNode, rootNode.nodeName.toLowerCase(), rewriteNode);
+    rewriteRecursively(rootNode, null, rewriteNode);
 
     // record metadata
     if (options["capture.recordDocumentMeta"]) {
@@ -2393,12 +2548,17 @@
       return prevTask.then(curTask);
     }, Promise.resolve());
 
+    // recover escaped noscripts
+    for (const node of escapedNoscriptList) {
+      if (!node.isConnected) { continue; }
+      const newElem = newDoc.createElement('noscript');
+      newElem.innerHTML = node.innerHTML;
+      node.replaceWith(newElem);
+    }
+
     // record after the content of all nested shadow roots have been processed
-    for (const {host, shadowRoot} of shadowRootList) {
-      captureRewriteAttr(host, "data-scrapbook-shadowroot", JSON.stringify({
-        data: shadowRoot.innerHTML,
-        mode: "open",
-      }));
+    for (const shadowRoot of shadowRootList) {
+      captureRewriteAttr(shadowRoot.host, "data-scrapbook-shadowdom", shadowRoot.innerHTML);
     }
 
     // attach CSS resource map
@@ -2422,10 +2582,6 @@
 
     // save document
     let content = scrapbook.documentToString(newDoc, options["capture.prettyPrint"]);
-    content = content.replace(/jc-([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/g, (match, key) => {
-      if (specialContentMap.has(key)) { return specialContentMap.get(key); }
-      return match;
-    });
 
     // pass content as Blob to prevent size limitation of a message
     // (for a supported browser)
@@ -2434,7 +2590,7 @@
     }
 
     const response = await capturer.invoke("saveDocument", {
-      sourceUrl: docUrl,
+      sourceUrl: capturer.getRedirectedUrl(docUrl, docUrlHash),
       documentFileName,
       settings,
       options,
@@ -2452,7 +2608,7 @@
     }
 
     return Object.assign({}, response, {
-      url: response.url + (response.url.startsWith('data:') ? '' : docUrlHash),
+      url: capturer.getRedirectedUrl(response.url, docUrlHash),
     });
   };
 
@@ -2484,26 +2640,12 @@
       }
 
       const cloneNodeMapping = (node, deep = false) => {
-        const newNode = newDoc.importNode(node, deep);
-        origNodeMap.set(newNode, node);
-        clonedNodeMap.set(node, newNode);
-
-        // map descendants
-        if (deep) {
-          const doc = node.ownerDocument;
-          const walker1 = doc.createNodeIterator(node);
-          const walker2 = newDoc.createNodeIterator(newNode);
-          let node1 = walker1.nextNode();
-          let node2 = walker2.nextNode();
-          while (node1) {
-            origNodeMap.set(node2, node1);
-            clonedNodeMap.set(node1, node2);
-            node1 = walker1.nextNode();
-            node2 = walker2.nextNode();
-          }
-        }
-
-        return newNode;
+        return scrapbook.cloneNode(node, deep, {
+          newDoc,
+          origNodeMap,
+          clonedNodeMap,
+          includeShadowDom: true,
+        });
       };
 
       const addResource = (url) => {
@@ -2638,53 +2780,49 @@
         // update shadow root data
         if (shadowRootSupported) {
           for (const elem of rootNode.querySelectorAll("*")) {
-            elem.removeAttribute("data-scrapbook-shadowroot");
-
-            const elemOrig = origNodeMap.get(elem);
-            if (!elemOrig) { continue; }
-
-            const shadowRootOrig = elemOrig.shadowRoot;
-            if (!shadowRootOrig) { continue; }
-
-            const shadowRoot = elem.attachShadow({mode: 'open'});
-            origNodeMap.set(shadowRoot, shadowRootOrig);
-            clonedNodeMap.set(shadowRootOrig, shadowRoot);
-            for (const elem of shadowRootOrig.childNodes) {
-              shadowRoot.appendChild(cloneNodeMapping(elem, true));
-            }
+            elem.removeAttribute("data-scrapbook-shadowdom");
+            elem.removeAttribute("data-scrapbook-shadowroot"); // WebScrapBook < 0.115
+            const shadowRoot = elem.shadowRoot;
+            if (!shadowRoot) { continue; }
             processRootNode(shadowRoot);
-            elem.setAttribute("data-scrapbook-shadowroot", JSON.stringify({
-              data: shadowRoot.innerHTML,
-              mode: "open",
-            }));
+            elem.setAttribute("data-scrapbook-shadowdom", shadowRoot.innerHTML);
             requireBasicLoader = true;
           }
         } else {
           // shadowRoot not supported by the browser.
           // Just record whether there's a recorded shadow root.
-          if (rootNode.querySelector('[data-scrapbook-shadowroot]')) {
+          if (rootNode.querySelector('[data-scrapbook-shadowdom]')) {
             requireBasicLoader = true;
+          }
+          // convert old data-scrapbook-shadowroot recursively (WebScrapBook < 0.115)
+          {
+            const convert = (rootNode) => {
+              for (const elem of rootNode.querySelectorAll('[data-scrapbook-shadowroot]')) {
+                try {
+                  const {data} = JSON.parse(elem.getAttribute('data-scrapbook-shadowroot'));
+                  const t = rootNode.ownerDocument.createElement('template');
+                  t.innerHTML = data;
+                  convert(t.content);
+                  elem.setAttribute("data-scrapbook-shadowdom", t.innerHTML);
+                  requireBasicLoader = true;
+                } catch (ex) {
+                  console.error(ex);
+                }
+                elem.removeAttribute('data-scrapbook-shadowroot');
+              }
+            };
+            convert(rootNode);
           }
         }
       };
 
       const {contentType: mime, characterSet: charset, documentElement: docElemNode} = doc;
 
-      // create a new document to replicate nodes via import
-      const newDoc = (new DOMParser()).parseFromString(
-        '<' + docElemNode.nodeName.toLowerCase() + '/>',
-        DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
-      );
-      while (newDoc.firstChild) {
-        newDoc.removeChild(newDoc.firstChild);
-      }
-
       const origNodeMap = new WeakMap();
       const clonedNodeMap = new WeakMap();
 
-      // add newDoc as the topmost cloned node
-      origNodeMap.set(newDoc, doc);
-      clonedNodeMap.set(doc, newDoc);
+      // create a new document to replicate nodes via import
+      const newDoc = scrapbook.cloneDocument(doc, {origNodeMap, clonedNodeMap});
 
       for (const node of doc.childNodes) {
         newDoc.appendChild(cloneNodeMapping(node, true));
@@ -2766,9 +2904,8 @@
         selectedNodes.push(node);
       }
 
-      // handle descendant node first as it may be altered when handling ancestor
-      for (const elem of selectedNodes.reverse()) {
-        elem.remove();
+      for (const node of selectedNodes) {
+        node.remove();
       }
     }
 
@@ -2793,31 +2930,52 @@
       // HTMLCanvasElement: Firefox >= 1.5, querySelectorAll: Firefox >= 3.5
       // getElementsByTagName is not implemented for DocumentFragment (shadow root)
       loader.textContent = "(" + scrapbook.compressJsFunc(function () {
-        var k1 = "data-scrapbook-shadowroot", k2 = "data-scrapbook-input-indeterminate", k3 = "data-scrapbook-canvas",
+        var k1 = "data-scrapbook-shadowdom",
+            k2 = "data-scrapbook-canvas",
+            k3 = "data-scrapbook-input-indeterminate",
+            k4 = "data-scrapbook-input-checked",
+            k5 = "data-scrapbook-option-selected",
+            k6 = "data-scrapbook-input-value",
+            k7 = "data-scrapbook-textarea-value",
             fn = function (r) {
               var E = r.querySelectorAll ? r.querySelectorAll("*") : r.getElementsByTagName("*"), i = E.length, e, d, s;
               while (i--) {
                 e = E[i];
-                if (e.hasAttribute(k1) && !e.shadowRoot && e.attachShadow) {
-                  d = JSON.parse(e.getAttribute(k1));
-                  s = e.attachShadow({mode: d.mode});
-                  s.innerHTML = d.data;
+                if ((d = e.getAttribute(k1)) !== null && !e.shadowRoot && e.attachShadow) {
+                  s = e.attachShadow({mode: 'open'});
+                  s.innerHTML = d;
                   e.removeAttribute(k1);
                 }
-                if (e.shadowRoot) {
-                  fn(e.shadowRoot);
-                }
-                if (e.hasAttribute(k2)) {
-                  e.indeterminate = true;
-                  e.removeAttribute(k2);
-                }
-                if (e.hasAttribute(k3)) {
+                if ((d = e.getAttribute(k2)) !== null) {
                   (function () {
                     var c = e, g = new Image();
                     g.onload = function () { c.getContext('2d').drawImage(g, 0, 0); };
-                    g.src = c.getAttribute(k3);
-                    c.removeAttribute(k3);
+                    g.src = d;
                   })();
+                  e.removeAttribute(k2);
+                }
+                if ((d = e.getAttribute(k3)) !== null) {
+                  e.indeterminate = true;
+                  e.removeAttribute(k3);
+                }
+                if ((d = e.getAttribute(k4)) !== null) {
+                  e.checked = d === 'true';
+                  e.removeAttribute(k4);
+                }
+                if ((d = e.getAttribute(k5)) !== null) {
+                  e.selected = d === 'true';
+                  e.removeAttribute(k5);
+                }
+                if ((d = e.getAttribute(k6)) !== null) {
+                  e.value = d;
+                  e.removeAttribute(k6);
+                }
+                if ((d = e.getAttribute(k7)) !== null) {
+                  e.value = d;
+                  e.removeAttribute(k7);
+                }
+                if (e.shadowRoot) {
+                  fn(e.shadowRoot);
                 }
               }
             };
@@ -2961,6 +3119,12 @@
     }));
   };
 
+  class ItemInfoFormatter extends scrapbook.ItemInfoFormatter {
+    format_uuid() {
+      return scrapbook.getUuid();
+    }
+  }
+
   /**
    * Format filename of the main item file to save.
    *
@@ -2972,120 +3136,56 @@
    * @param {Object} params.options
    * @return {string} The formatted filename.
    */
-  capturer.formatIndexFilename = async function ({title, sourceUrl, isFolder, settings, options}) {
-    const time = scrapbook.idToDate(settings.timeId);
-    const u = new URL(sourceUrl);
-
-    const tidy = (filename) => {
-      return scrapbook.validateFilename(filename, options["capture.saveAsciiFilename"]);
+  capturer.formatIndexFilename = async function ({
+    title, sourceUrl, isFolder,
+    settings: {
+      timeId: id,
+    } = {},
+    options: {
+      "capture.saveFilename": template,
+      "capture.saveAsciiFilename": saveAsciiFilename,
+      "capture.saveFilenameMaxLenUtf16": saveFilenameMaxLenUtf16,
+      "capture.saveFilenameMaxLenUtf8": saveFilenameMaxLenUtf8,
+    } = {},
+  }) {
+    // a dummy scrapbook item for formatting
+    const item = {
+      id,
+      create: id,
+      title,
+      source: sourceUrl,
     };
 
-    let filename = options["capture.saveFilename"].replace(/%(\w*)%/g, (_, key) => {
-      switch (key.toUpperCase()) {
-        case "": {
-          // escape "%" with "%%"
-          return "%";
-        }
-        case "ID": {
-          return settings.timeId;
-        }
-        case "ID_0": {
-          return scrapbook.dateToIdOld(scrapbook.idToDate(settings.timeId));
-        }
-        case "UUID": {
-          return scrapbook.getUuid();
-        }
-        case "TITLE": {
-          return tidy(title);
-        }
-        case "HOST": {
-          return tidy(u.host);
-        }
-        case "PAGE": {
-          return tidy(scrapbook.filenameParts(scrapbook.urlToFilename(sourceUrl))[0]);
-        }
-        case "FILE": {
-          return tidy(scrapbook.urlToFilename(sourceUrl));
-        }
-        case "DATE": {
-          return [
-            time.getFullYear(),
-            scrapbook.intToFixedStr(time.getMonth() + 1, 2),
-            scrapbook.intToFixedStr(time.getDate(), 2),
-          ].join('-');
-        }
-        case "DATE_UTC": {
-          return [
-            time.getUTCFullYear(),
-            scrapbook.intToFixedStr(time.getUTCMonth() + 1, 2),
-            scrapbook.intToFixedStr(time.getUTCDate(), 2),
-          ].join('-');
-        }
-        case "TIME": {
-          return [
-            scrapbook.intToFixedStr(time.getHours(), 2),
-            scrapbook.intToFixedStr(time.getMinutes(), 2),
-            scrapbook.intToFixedStr(time.getSeconds(), 2),
-          ].join('-');
-        }
-        case "TIME_UTC": {
-          return [
-            scrapbook.intToFixedStr(time.getUTCHours(), 2),
-            scrapbook.intToFixedStr(time.getUTCMinutes(), 2),
-            scrapbook.intToFixedStr(time.getUTCSeconds(), 2),
-          ].join('-');
-        }
-        case "YEAR": {
-          return time.getFullYear();
-        }
-        case "YEAR_UTC": {
-          return time.getUTCFullYear();
-        }
-        case "MONTH": {
-          return scrapbook.intToFixedStr(time.getMonth() + 1, 2);
-        }
-        case "MONTH_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCMonth() + 1, 2);
-        }
-        case "DAY": {
-          return scrapbook.intToFixedStr(time.getDate(), 2);
-        }
-        case "DAY_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCDate(), 2);
-        }
-        case "HOURS": {
-          return scrapbook.intToFixedStr(time.getHours(), 2);
-        }
-        case "HOURS_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCHours(), 2);
-        }
-        case "MINUTES": {
-          return scrapbook.intToFixedStr(time.getMinutes(), 2);
-        }
-        case "MINUTES_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCMinutes(), 2);
-        }
-        case "SECONDS": {
-          return scrapbook.intToFixedStr(time.getSeconds(), 2);
-        }
-        case "SECONDS_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCSeconds(), 2);
-        }
-        default: {
-          return '';
-        }
-      }
-    });
-
-    filename = filename
+    const formatter = new ItemInfoFormatter(item);
+    let filename = template
       .split('/')
-      .map(x => scrapbook.validateFilename(x, options["capture.saveAsciiFilename"]))
+      .map(x => scrapbook.validateFilename(formatter.format(x), saveAsciiFilename))
       .join('/');
 
     // see capturer.getUniqueFilename for limitation details
-    filename = scrapbook.crop(filename, options["capture.saveFilenameMaxLenUtf16"], options["capture.saveFilenameMaxLenUtf8"], "");
+    filename = scrapbook.crop(filename, saveFilenameMaxLenUtf16, saveFilenameMaxLenUtf8, "");
 
     return filename;
+  };
+
+  capturer.getRedirectedUrl = function (redirectedUrl, sourceUrlHash) {
+    const [redirectedUrlMain, redirectedUrlHash] = scrapbook.splitUrlByAnchor(redirectedUrl);
+
+    // Some browsers may encounter an error for a data URL with hash.
+    if (redirectedUrl.startsWith('data:')) {
+      return redirectedUrlMain;
+    }
+
+    // @FIXME:
+    // Browsers usually take the redirected URL hash if it exists.
+    // Unfortunately, XMLHttpRequest and fetch does not keep response URL hash,
+    // and thus this may not actually happen.
+    if (redirectedUrlHash) {
+      return redirectedUrl;
+    }
+
+    // Browsers usually keep source URL hash if the redirected URL has no hash.
+    return redirectedUrlMain + sourceUrlHash;
   };
 
   capturer.resolveRelativeUrl = function (relativeUrl, baseUrl) {
@@ -3158,17 +3258,17 @@
 
         const groups = new Map();
 
-        Array.prototype.forEach.call(this.doc.styleSheets, (css) => {
+        for (const css of this.doc.styleSheets) {
           // ignore imported CSS
           if (!css.ownerNode) {
-            return;
+            continue;
           }
 
           const title = css.title && css.title.trim();
 
           // ignore persistent CSS
           if (!title) {
-            return;
+            continue;
           }
 
           // preferred or alternate
@@ -3176,7 +3276,7 @@
             groups.set(title, []);
           }
           groups.get(title).push(css);
-        });
+        }
 
         const arr = Array.from(groups.values());
 
@@ -3500,7 +3600,7 @@
      *     request if it's cross origin.
      * @param {boolean} [params.errorWithNull] - Whether to throw an error if
      *     not retrievable.
-     * @return {Array<CSSStyleRule>|null}
+     * @return {?CSSStyleRule[]}
      */
     async getRulesFromCss({css, url, refUrl, crossOrigin = true, errorWithNull = false}) {
       let rules = null;
@@ -4295,7 +4395,7 @@
 
         const registry = await capturer.invoke("registerFile", {
           url: sourceUrl,
-          role: ["singleHtml"].includes(options["capture.saveAs"]) ? undefined :
+          role: options["capture.saveAs"] === "singleHtml" ? undefined :
               isDynamic ? `css-${scrapbook.getUuid()}` : 'css',
           settings,
           options,
@@ -4539,7 +4639,7 @@
         return rootNode.querySelectorAll(selector.css);
       }
       if (typeof selector.xpath === 'string') {
-        const iter = rootNode.ownerDocument.evaluate(selector.xpath, rootNode);
+        const iter = rootNode.ownerDocument.evaluate(selector.xpath, rootNode, null, 0, null);
         let elems = [], elem;
         while (elem = iter.iterateNext()) {
           elems.push(elem);
@@ -4710,7 +4810,7 @@
     cmd_unwrap(rootNode, selector) {
       const elems = this.selectNodes(rootNode, this.resolve(selector, rootNode));
       for (const elem of elems) {
-        scrapbook.unwrapElement(elem);
+        scrapbook.unwrapNode(elem);
       }
     }
 
