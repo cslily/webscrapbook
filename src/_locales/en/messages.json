@@ -113,6 +113,9 @@
   "EditExitLabel": {
     "message": "Exit"
   },
+  "EditLocateLabel": {
+    "message": "Locate"
+  },
   "EditPage": {
     "message": "Edit page"
   },
@@ -143,6 +146,18 @@
   },
   "EditorButtonAnnotation": {
     "message": "Annotation tool - Click to create a sticky note."
+  },
+  "EditorButtonAnnotationLink": {
+    "message": "Attach hyperlink"
+  },
+  "EditorButtonAnnotationLinkPrompt": {
+    "message": "Input the URL to attach the link:"
+  },
+  "EditorButtonAnnotationNext": {
+    "message": "Find next annotation"
+  },
+  "EditorButtonAnnotationPrev": {
+    "message": "Find previous annotation"
   },
   "EditorButtonAnnotationSticky": {
     "message": "Create sticky note"
@@ -319,6 +334,9 @@
   "EditorButtonLocateViewDirectory": {
     "message": "View page directory"
   },
+  "EditorButtonLocateViewSource": {
+    "message": "View source page"
+  },
   "EditorButtonMarker": {
     "message": "Marker - Click to mark the selected text. Click on a mark to create or edit annotation."
   },
@@ -368,6 +386,9 @@
   },
   "EditorButtonUndo": {
     "message": "Undo"
+  },
+  "EditorButtonUndoToggle": {
+    "message": "Enable undo"
   },
   "EditorDeleteAnnotationConfirm": {
     "message": "Delete this annotation?"
@@ -589,6 +610,12 @@
   "OpenViewer": {
     "message": "View archived page"
   },
+  "OptionAutocaptureLabel": {
+    "message": "Enable auto-capture:"
+  },
+  "OptionAutocaptureTooltip": {
+    "message": "Auto-capture is defined using JSON syntax with the following format:\n\n  [\n   {\n    \"name\": \"Example#1\",\n    \"description\": \"Auto-capture example.com\",\n    \"pattern\": \"/^https?://example\\\\.com//i\",\n    \"delay\": 5000,\n    ...\n   },\n   ...\n  ]\n\n• name: a string to name this config and can be used for debugging identification, optional.\n• description: a string to annotate this config, optional.\n• disabled: disables this config when the value is truthy, optional.\n• tabId: a tab ID to restrict this config to work for. Works for any tab when omitted.\n• pattern: a regular expression string (“/expression/flags”) to restrict the URLs this config works for. Works for any URL when omitted.\n• delay: delay time before the auto-capture starts after the page completes loading (ms). No delay if it's omitted or not greater than 0.\n• repeat: repeat interval for the repeated captures after the first auto-capture starts (ms). No repeated capture if omitted or not greater than 0.\n• allowDuplicate: allow identical page be auto-captured repeatedly if the value is truthy, optional.\n• taskInfo: overriding capture settings, with the same format as the main JSON object of “Capture as...”, optional.\n• eachTaskInfo: overriding capture settings for each task, with the same format as each object in the tasks array of “Capture as...”, optional."
+  },
   "OptionCaptureAppletLabel": {
     "message": "APPLETs:"
   },
@@ -653,21 +680,13 @@
     "message": "Include these URLs:"
   },
   "OptionCaptureDownLinkDocUrlFilterTooltip": {
-    "message": "This determines what links are for capturing according to URL.\n\n• Each following line is a full URL (with chars following a “#” or space stripped) or a regular expression (e.g. “/^http://example\\.com//”). \n• A link whose full URL (with chars following a “#” stripped) matches a rule at any line is included for downloading. For example, “http://example.com/subpage#h2” matches the rule “http://example.com/subpage SubPageTitle”. Any URL is included if no rule exist in any line.\n• A line starting with “#” is regarded as a comment and will be ignored during execution."
-  },
-  "OptionCaptureDownLinkFileExtFilterError": {
-    "message": "The following regular expressions in file extension filter are invalid and will be skipped on execution. Stop to fix them now?\n\n$LINES$",
-    "placeholders": {
-      "lines": {
-        "content": "$1"
-      }
-    }
+    "message": "This determines what links are for capturing according to URL.\n\n• Each following line is a full URL (with chars following a “#” stripped) or a regular expression (e.g. “/^http://example\\.com//”). \n• A link whose full URL (with chars following a “#” stripped) matches a rule at any line is included for downloading. For example, the link “http://example.com/subpage#h2” matches the full URL rule “http://example.com/subpage” or the regular expression rule “/^http://example\\.com/SubPage\\d*/i”. Any URL is included if no rule exists in any line.\n• A line starting with “#” is regarded as a comment and will be ignored during execution.\n• Text following a space is regarded as a comment and will be ignored during execution. For example, “http://example.com/ comment” is treated as “http://example.com/”; “/^https:/ comment” is treated as“/^https:/”."
   },
   "OptionCaptureDownLinkFileExtFilterLabel": {
     "message": "Include these file extensions:"
   },
   "OptionCaptureDownLinkFileExtFilterTooltip": {
-    "message": "This determines what links are to be downloaded according to file extension.\n\n• Each following line is a comma-separated list of extensions (case-insensitive and may include spaces, e.g. “jpg, jpeg”) or a regular expression (e.g. “/jpe?g|gif|png/i”).\n• A link whose full extension matches a rule at any line is included for download. For example, “http://example.com/file.doc?token=foo” is taken “doc” for matching and does not match the rule “docx”.\n• A line starting with “#” is regarded as a comment and will be ignored during execution."
+    "message": "This determines what links are to be downloaded according to file extension.\n\n• Each following line is a comma-separated list of extensions (case-insensitive and may include spaces, e.g. “jpg, jpeg”) or a regular expression (e.g. “/jpe?g|gif|png/i”).\n• A link whose full extension matches a rule at any line is included for download. For example, the link “http://example.com/file.doc?token=foo” is taken “doc” for matching and does not match the extensions rule “docx, do”.\n• A line starting with “#” is regarded as a comment and will be ignored during execution."
   },
   "OptionCaptureDownLinkFileModeHeaderLabel": {
     "message": "Match HTTP header and file extension"
@@ -684,30 +703,11 @@
   "OptionCaptureDownLinkFileModeUrlLabel": {
     "message": "Match URL file extension"
   },
-  "OptionCaptureDownLinkFilterErrorLine": {
-    "message": "Line $LINE$: $ERROR$",
-    "placeholders": {
-      "line": {
-        "content": "$1"
-      },
-      "error": {
-        "content": "$2"
-      }
-    }
-  },
-  "OptionCaptureDownLinkUrlFilterError": {
-    "message": "The following regular expressions in URL filter are invalid and will be skipped on execution. Stop to fix them now?\n\n$LINES$",
-    "placeholders": {
-      "lines": {
-        "content": "$1"
-      }
-    }
-  },
   "OptionCaptureDownLinkUrlFilterLabel": {
     "message": "URL filter:"
   },
   "OptionCaptureDownLinkUrlFilterTooltip": {
-    "message": "This determines what are forbidden for downloading or capturing according to URL.\n\n• Each following line is a full URL (with chars following a “#” or space stripped) or a regular expression (e.g. “/[/=]logout\\b/i”). \n• A link whose full URL (with chars following a “#” stripped) matches a rule at any line is forbidden for downloading.\n• A line starting with “#” is regarded as a comment and will be ignored during execution."
+    "message": "This determines what are forbidden for downloading or capturing according to URL.\n\n• Each following line is a full URL (with chars following a “#” stripped) or a regular expression (e.g. “/[/=]logout\\b/i”). \n• A link whose full URL (with chars following a “#” stripped) matches a rule at any line is forbidden for downloading. For example, the links “http://example.com/logout” and “http://example.com/?a=LOGOUT” both match the regular expression rule “/[/=]logout\\b/i”.\n• A line starting with “#” is regarded as a comment and will be ignored during execution.\n• Text following a space is regarded as a comment and will be ignored during execution. For example, “http://example.com/ comment” is treated as “http://example.com/”; “/^https:/ comment” is treated as“/^https:/”."
   },
   "OptionCaptureEmbedLabel": {
     "message": "EMBEDs:"
@@ -727,6 +727,15 @@
   "OptionCaptureFontTooltip": {
     "message": "This determines how fonts are handled.\n\n• Save: Save all fonts to local.\n• Save used: Save only the fonts used by elements in the captured web page area. If the captured page is not displayed (such as capture source), all fonts are still saved.\n• Link: Link the font to its source URL. Note that a network flow will be triggered when browsing the captured document in the future.\n• Blank: Clear fonts from the stylesheets."
   },
+  "OptionCaptureFormStatusHtmlAllLabel": {
+    "message": "Keep all HTML"
+  },
+  "OptionCaptureFormStatusHtmlLabel": {
+    "message": "Keep HTML"
+  },
+  "OptionCaptureFormStatusKeepAllLabel": {
+    "message": "Keep all"
+  },
   "OptionCaptureFormStatusKeepLabel": {
     "message": "Keep"
   },
@@ -736,25 +745,26 @@
   "OptionCaptureFormStatusResetLabel": {
     "message": "Reset"
   },
+  "OptionCaptureFormStatusSaveAllLabel": {
+    "message": "Save all"
+  },
+  "OptionCaptureFormStatusSaveLabel": {
+    "message": "Save"
+  },
+  "OptionCaptureFormStatusTooltip": {
+    "message": "This determines how current form status are handled.\n\n• Save all: Record all current status using a special attribute and an initialization script, to avoid breaking features like reset.\n• Save: Record current status (excluding sensitive information like passwords) using a special attribute and an initialization script, to avoid breaking features like reset.\n• Keep all: Rewrite current status with corresponding HTML attribute. Non-HTML representable status are handled via a special attribute and an initialization script.\n• Keep: Rewrite current status (excluding sensitive information like passwords) with corresponding HTML attribute. Non-HTML representable status are handled via a special attribute and an initialization script.\n• Keep all HTML: Rewrite current status with corresponding HTML attribute. Ignore non-HTML representable status.\n• Keep HTML: Rewrite current status (excluding sensitive information like passwords) with corresponding HTML attribute. Ignore non-HTML representable status.\n• Reset: Ignore current status."
+  },
   "OptionCaptureFrameLabel": {
     "message": "Frames:"
   },
   "OptionCaptureFrameTooltip": {
     "message": "This determines how frames (FRAME and IFRAME elements) are handled.\n\n• Save: Save the frame pages to local.\n• Link: Link the frame to its source URL. Note that a network flow will be triggered when browsing the captured document in the future. NOTE: Due to the restriction of SOP, ths font cannot be loaded by the captured page unless CORS has been properly configured by its source server.\n• Blank: Disable the frame elements.\n• Remove: Remove the frame. Note that this could alter the web page layout."
   },
-  "OptionCaptureHelpersError": {
-    "message": "Capture helper syntax is invalid and will not work when run. Stop to fix them now?\n\n$MESSAGE$",
-    "placeholders": {
-      "message": {
-        "content": "$1"
-      }
-    }
-  },
   "OptionCaptureHelpersLabel": {
     "message": "Enable capture helpers"
   },
   "OptionCaptureHelpersTooltip": {
-    "message": "Capture helpers preprocess the captured content to improve the capture quality. It's defined using JSON syntax with the following format:\n\n  [\n    {\n     \"name\": \"AdsRemover\",\n     \"description\": \"Remove unwanted content\",\n     \"pattern\": \"/https?://example.com/i\",\n     \"commands\": [\n       [\"remove\", \"#ad-by-xxx\"],\n       [\"unwrap\", \"#i-want-to-strip-this\"],\n       ...\n     ]\n    },\n    {\n     \"name\": \"DeferredImageFixer\",\n     \"description\": \"Save deferred images defined by data-*\",\n     \"commands\": [\n       [\"attr\", {\"css\": \"img[data-src]\"}, \"src\", [\"get_attr\", null, \"data-src\"]],\n       [\"attr\", {\"css\": \"img[data-srcset]\"}, \"srcset\", [\"get_attr\", null, \"data-srcset\"]],\n       ...\n     ]\n    },\n    ...\n  ]\n\n• name: a string to name this helper and can be used in debugging identification, optional.\n• description: a string to annotate this helper, optional.\n• disabled: disables this helper when the value is truthy, optional.\n• debug: enable debug mode for this helper when the value is truthy, optional.\n• pattern: a regular expression string (“/expression/flags”; same for followings) to restrict URLs this helper works for. Works for all pages when omitted.\n• commands: Commands to run in order.\n  • Available commands are:\n    • [\"options\", name, value]: overwrite capture option name (string) with value, with the same format as the exported options (limited to “Capture - content”).\n    • [\"options\", {name: value, ...}]: overwrite multiple capture options.\n    • [\"remove\", selector]: remove each element matched by selector.\n    • [\"unwrap\", selector]: unwrap (remove but keep descendants) each element matched by selector.\n    • [\"html\", selector, htmlText]: for each element matched by selector, set HTML content to htmlText (string).\n    • [\"text\", selector, text]: for each element matched by selector, set text content to text (string).\n    • [\"attr\", selector, name, value]: for each element matched by selector, set attribute name (string) to value (string, or null to delete attribute).\n    • [\"attr\", selector, {name: value, ...}]: for each element matched by selector, set multiple attributes.\n    • [\"css\", selector, name, value, priority]: for each element matched by selector, set CSS property name (string) to value (string, or null to delete property) with priority (\"important\" or \"\" or omitted).\n    • [\"css\", selector, {name: value, ...}]: for each element matched by selector, set multiple CSS properties.\n    • [\"insert\", selector, name, attrs, text, mode, index]: for each element matched by selector, insert an element with it as reference, with name (string) as element name, attrs as attributes ({name: value, ...}), text (string) as text content, mode (string) as insertion method (“before”: before the referenced element; “after”: after the referenced element; “insert”: insert as the index-th child element of the referenced element; “append”: insert as the last child element of the referenced element).\n    • [\"for\", selector, command1, command2, ...]: for each element matched by selector, run command# in order.\n  • A parameter of a command can also be a command, and below commands can be used to get a value:\n    • [\"has_elem\", selector]: whether selector matches at least one element.\n    • [\"has_attr\", selector, name]: whether the first element matched by selector has the attribute name.\n    • [\"match\", text, pattern]: whether text matches the regular expression string pattern. If index is specified, return corresponding subgroup of matched string.\n    • [\"get_html\", selector]: HTML content of the first element matched by selector.\n    • [\"get_text\", selector]: text content of the first element matched by selector.\n    • [\"get_attr\", selector, name]: value of attribute name of the first element matched by selector.\n    • [\"get_css\", selector, name, getPriority]: value of style name of the first element matched by selector. Get style priority instead if getPriority is truthy.\n    • [\"replace\", text, pattern, replacement]: replace string text with regular expression pattern to replacement.\n    • [\"if\", cond, thenValue, elseValue]: return thenValue if cond is truthy, or elseValue otherwise.\n    • [\"and\", value1, value2, ...]: the first falsy value of value#, or the last value.\n    • [\"or\", value1, value2, ...]: the first truthy value of value#, or the last value.\n  • Selector can be specified in many commands to select elements according to the current reference element. The reference element of each command of commands is initially the root node of the captured page (which is usually the HTML element). Each element matched by selector of a command X will become the reference element of every command Y following the selector parameter of command X. The value of a selector can be either:\n    • \"self\" or null: to select the current reference element.\n    • \"parent\": to select the parent of the reference element.\n    • \"root\": to select the root node.\n    • \"<CSS selector value>\": to match elements using a CSS selector.\n    • {\"css\": \"<CSS selector value>\"}: to match elements using a CSS selector.\n    • {\"xpath\": \"<XPath value>\"}: to match elements using an XPath.\n  • When debug mode is enabled, commands with name prefixed with “*” will be logged in the console. For example: [\"*get_attr\", null, \"data-src\"]\n\nWhen an error occurs or debug mode is enabled, details are available in the console of the captured page (or the capture dialog whening capturing source)."
+    "message": "Capture helpers preprocess the captured content to improve the capture quality. It's defined using JSON syntax with the following format:\n\n  [\n    {\n      \"name\": \"AdsRemover\",\n      \"description\": \"Remove unwanted content\",\n      \"pattern\": \"/https?://example\\\\.com//i\",\n      \"commands\": [\n        [\"remove\", \"#ad-by-xxx\"],\n        [\"unwrap\", \"#i-want-to-strip-this\"],\n        ...\n      ]\n    },\n    {\n      \"name\": \"DeferredImageFixer\",\n      \"description\": \"Save deferred images defined by data-*\",\n      \"commands\": [\n        [\"attr\", {\"css\": \"img[data-src]\"}, \"src\", [\"get_attr\", null, \"data-src\"]],\n        [\"attr\", {\"css\": \"img[data-srcset]\"}, \"srcset\", [\"get_attr\", null, \"data-srcset\"]],\n        ...\n      ]\n    },\n    ...\n  ]\n\n• name: a string to name this helper and can be used in debugging identification, optional.\n• description: a string to annotate this helper, optional.\n• disabled: disables this helper when the value is truthy, optional.\n• debug: enable debug mode for this helper when the value is truthy, optional.\n• pattern: a regular expression string (“/expression/flags”; same for followings) to restrict URLs this helper works for. Works for all pages when omitted.\n• commands: Commands to run in order.\n  • Available commands are:\n    • [\"options\", name, value]: overwrite capture option name (string) with value, with the same format as the exported options (limited to “Capture - content”).\n    • [\"options\", {name: value, ...}]: overwrite multiple capture options.\n    • [\"remove\", selector]: remove each element matched by selector.\n    • [\"unwrap\", selector]: unwrap (remove but keep descendants) each element matched by selector.\n    • [\"html\", selector, htmlText]: for each element matched by selector, set HTML content to htmlText (string).\n    • [\"text\", selector, text]: for each element matched by selector, set text content to text (string).\n    • [\"attr\", selector, name, value]: for each element matched by selector, set attribute name (string) to value (string, or null to delete attribute).\n    • [\"attr\", selector, {name: value, ...}]: for each element matched by selector, set multiple attributes.\n    • [\"css\", selector, name, value, priority]: for each element matched by selector, set CSS property name (string) to value (string, or null to delete property) with priority (\"important\" or \"\" or omitted).\n    • [\"css\", selector, {name: value, ...}]: for each element matched by selector, set multiple CSS properties.\n    • [\"insert\", selector, name, attrs, text, mode, index]: for each element matched by selector, insert an element with it as reference, with name (string) as element name, attrs as attributes ({name: value, ...}), text (string) as text content, mode (string) as insertion method (“before”: before the referenced element; “after”: after the referenced element; “insert”: insert as the index-th child element of the referenced element; “append”: insert as the last child element of the referenced element).\n    • [\"for\", selector, command1, command2, ...]: for each element matched by selector, run command# in order.\n  • A parameter of a command can also be a command, and below commands can be used to get a value:\n    • [\"has_elem\", selector]: whether selector matches at least one element.\n    • [\"has_attr\", selector, name]: whether the first element matched by selector has the attribute name.\n    • [\"match\", text, pattern]: whether text matches the regular expression string pattern. If index is specified, return corresponding subgroup of matched string.\n    • [\"get_html\", selector]: HTML content of the first element matched by selector.\n    • [\"get_text\", selector]: text content of the first element matched by selector.\n    • [\"get_attr\", selector, name]: value of attribute name of the first element matched by selector.\n    • [\"get_css\", selector, name, getPriority]: value of style name of the first element matched by selector. Get style priority instead if getPriority is truthy.\n    • [\"replace\", text, pattern, replacement]: replace string text with regular expression pattern to replacement.\n    • [\"if\", cond, thenValue, elseValue]: return thenValue if cond is truthy, or elseValue otherwise.\n    • [\"and\", value1, value2, ...]: the first falsy value of value#, or the last value.\n    • [\"or\", value1, value2, ...]: the first truthy value of value#, or the last value.\n  • Selector can be specified in many commands to select elements according to the current reference element. The reference element of each command of commands is initially the root node of the captured page (which is usually the HTML element). Each element matched by selector of a command X will become the reference element of every command Y following the selector parameter of command X. The value of a selector can be either:\n    • \"self\" or null: to select the current reference element.\n    • \"parent\": to select the parent of the reference element.\n    • \"root\": to select the root node.\n    • \"<CSS selector value>\": to match elements using a CSS selector.\n    • {\"css\": \"<CSS selector value>\"}: to match elements using a CSS selector.\n    • {\"xpath\": \"<XPath value>\"}: to match elements using an XPath.\n  • When debug mode is enabled, commands with name prefixed with “*” will be logged in the console. For example: [\"*get_attr\", null, \"data-src\"]\n\nWhen an error occurs or debug mode is enabled, details are available in the console of the captured page (or the capture dialog whening capturing source)."
   },
   "OptionCaptureImageBackgroundLabel": {
     "message": "Style images:"
@@ -772,7 +782,7 @@
     "message": "Add infobar when a page is captured or saved"
   },
   "OptionCaptureInsertInfoBarTooltip": {
-    "message": "If checked, a script will be inserted in a captured or saved page to show an infobar at page top (requires JavaScript).\n\nNOTE: Archive page viewer cannot show the infobar as it does not support JavaScript. Use a viewing technique that supports JavaScript to work with an archive page, such as opening the index page after unzipping."
+    "message": "If checked, a script will be inserted in a captured or saved page to show an infobar at page top (requires JavaScript).\n\n• NOTE: Archive page viewer cannot show the infobar as it does not support JavaScript. Use a viewing technique that supports JavaScript to work with an archive page, such as opening the index page after unzipping."
   },
   "OptionCaptureLinkUnsavedUriLabel": {
     "message": "Link uncaptured resource to source"
@@ -880,16 +890,16 @@
     "message": "Max length for filename to save (UTF-16 bytes):"
   },
   "OptionCaptureSaveFilenameMaxLenUtf16Tooltip": {
-    "message": "Truncate a filename whose length exceeds this defined bytes in UTF-16 encoding. \n\n•Windows usually uses UTF-16 for filename encoding and has a restriction of max file path length of 255 bytes."
+    "message": "Truncate a filename whose length exceeds this defined bytes in UTF-16 encoding. \n\n• Windows usually uses UTF-16 for filename encoding and has a restriction of max file path length of 255 bytes."
   },
   "OptionCaptureSaveFilenameMaxLenUtf8Label": {
     "message": "Max length for filename to save (UTF-8 bytes):"
   },
   "OptionCaptureSaveFilenameMaxLenUtf8Tooltip": {
-    "message": "Truncate a filename whose length exceeds this defined bytes in UTF-16 encoding. \n\n•Linux usually uses UTF-8 for filename encoding and has a restriction of max filename length of 255 bytes and max file path length of 4096 bytes."
+    "message": "Truncate a filename whose length exceeds this defined bytes in UTF-16 encoding. \n\n• Linux usually uses UTF-8 for filename encoding and has a restriction of max filename length of 255 bytes and max file path length of 4096 bytes."
   },
   "OptionCaptureSaveFilenameTooltip": {
-    "message": "This determines the filename (excluding the extension) when saving a capture.\n\nFollowing template syntaxes are available:\n• %% - a literal “%”.\n• %ID% - the unique identifier of the capture, e.g. “20190301124533216”.\n• %ID_0% - the unique identifier using legacy ScrapBook format, e.g. “20190301204533”.\n• %UUID% - generates a random UUID, e.g. “941e4674-d6c7-4709-9703-a1b4359286c6”.\n• %TITLE% - page title, or the last URL segment.\n• %HOST% - domain name of the source, e.g. “example.com”.\n• %PAGE% - the last URL segment, with extension removed.\n• %FILE% - the last URL segment.\n• %DATE% - current date, in YYYY-MM-DD format.\n• %TIME% - current time, in HH-MM-SS format.\n• %YEAR% - current year, in YYYY format.\n• %MONTH% - current month, in MM format。\n• %DAY% - current date in the month, in DD format.\n• %HOURS% - current hours, in HH format.\n• %MINUTES% - current minutes, in MM format.\n• %SECONDS% - current seconds, in SS format.\n• “_UTC” can be appended to date/time parameters to use UTC time, e.g.  %TIME_UTC%, %HOURS_UTC%.\n• A slash “/” can be used to specify a subfolder, e.g. “%YEAR%/%MONTH%/%TITLE%”."
+    "message": "This determines the filename (excluding the extension) when saving a capture. A slash “/” can be used to specify a subfolder, e.g. “%create-Y%/%create-m%/%title%”.\n\nFollowing “%<param>%” template syntaxes are available:\n• %% - a literal “%”.\n• %id% - the unique identifier of the capture, e.g. “20190301124533216”.\n• %id-legacy% - the unique identifier using legacy ScrapBook format, e.g. “20190301204533”.\n• %uuid% - generates a random UUID, e.g. “941e4674-d6c7-4709-9703-a1b4359286c6”.\n• %title% - page title, or the last URL segment.\n• %source% - URL of the source.\n• %source-host% - domain name of the source, e.g. “example.com”.\n• %source-file% - filename of the source, usually the last URL segment.\n• %source-page% - page name of the source, usually the last URL segment with extension removed.\n• %create% - create time.\n\nThe <param> of %create% can be suffixed with “-<time_format>” to specify a time format (using POSIX strftime format), and the <time_format> can be suffixed with “-utc” to use UTC time. For example, “%create-F-utc%” outputs something like “2020-04-01”.\n\nBelow is a list of some frequently used POSIX strftime formats:\n• Y: year with 4 digits\n• y: year with 2 digits\n• m: month with 2 digits (01 to 12)\n• d: date of month with 2 digits (01 to 31)\n• H: hours with 2 digits (00 to 23)\n• M: minutes with 2 digits (00 to 59)\n• S: seconds with 2 digits (00 to 59)\n• F: date (YYYY-MM-DD)\n• T: time (HH:MM:SS)"
   },
   "OptionCaptureSaveResourcesSequentiallyLabel": {
     "message": "Save resources sequentially"
@@ -922,7 +932,7 @@
     "message": "Scripts:"
   },
   "OptionCaptureScriptTooltip": {
-    "message": "This determines how all scripts (including SCRIPT elements, links with javascript: protocol, and dynamic attributes like onclick, etc.) are handled.\n\n• Save: Save the referenced script resource to local. NOTE: The saved script may not run normally as the captured page has left the original server environment and has had partial content rewritten. Besides, saved scripts don't run in the archive page viewer due to a security concern. It is generally recommended to perform a capture source, and set capture options to “save”, “canvas” to “save initial status”, “form status” to “reset”, “shadow DOMs” to “remove”, “remove hidden elements” to “disable”, and “rewrite styles” to non-“advanced tidy”, to reduce the chance of a conflict with the script.\n• Link: Link the script to its source URL. Note that a network flow will be triggered when browsing the captured document in the future.\n• Blank: Disable the script.\n• Remove: Remove the script element. Note that this could alter the web page layout in some rare cases."
+    "message": "This determines how all scripts (including SCRIPT elements, links with javascript: protocol, and dynamic attributes like onclick, etc.) are handled.\n\n• Save: Save the referenced script resource to local. NOTE: The saved script may not run normally and may introduce privacy or security issue as the captured page has left the original server environment and has had partial content rewritten. Besides, saved scripts don't run in the archive page viewer due to a security concern. It is generally recommended to perform a capture source, and set capture options to “save”, “canvas” to “save initial status”, “form status” to “reset”, “shadow DOMs” to “remove”, “remove hidden elements” to “disable”, and “rewrite styles” to non-“advanced tidy”, to reduce the chance of a conflict with the script.\n• Link: Link the script to its source URL. Note that a network flow will be triggered when browsing the captured document in the future.\n• Blank: Disable the script.\n• Remove: Remove the script element."
   },
   "OptionCaptureShadowDomLabel": {
     "message": "Shadow DOMs:"
@@ -934,7 +944,7 @@
     "message": "Styles:"
   },
   "OptionCaptureStyleTooltip": {
-    "message": "This determines how stylesheets (including external – some LINK elements – and internal – STYLE elements) are handled.\n\n• Save: Save the referenced external stylesheet resource to local.\n• Link: Link the external stylesheet to its source URL. Note that a network flow will be triggered when browsing the captured document in the future.\n• Blank: Disable the stylesheet.\n• Remove: Remove the stylesheet element. Note that this could alter the web page layout in some rare cases."
+    "message": "This determines how stylesheets (including external – some LINK elements – and internal – STYLE elements) are handled.\n\n• Save: Save the referenced external stylesheet resource to local.\n• Link: Link the external stylesheet to its source URL. Note that a network flow will be triggered when browsing the captured document in the future.\n• Blank: Disable the stylesheet.\n• Remove: Remove the stylesheet element."
   },
   "OptionCaptureVideoLabel": {
     "message": "Videos:"
@@ -995,6 +1005,9 @@
   },
   "OptionEditorUseNativeTagsTooltip": {
     "message": "Use native HTML tags for markings to be compatible with old browsers (e.g. IE < 9), but are more likely to be intefered by the original web page and results in an abnormal style."
+  },
+  "OptionGroupAutocapture": {
+    "message": "Auto-capture"
   },
   "OptionGroupCapture": {
     "message": "Capture - content"
@@ -1074,14 +1087,50 @@
   "OptionScrapbookBackupForRecaptureTooltip": {
     "message": "Data files of the original capture will be moved to the backup directory configured by the backend server after the capture is done successfully. Uncheck to delete instead of moving to backup directory instead.\n\n• NOTE: Annotations in the original captured page are automatically migrated to the new capture. However, it's possible that some annotations cannot be auto-migrated or even not detected at all, and thus it's generally recommended to leave a backup in case something goes wrong."
   },
+  "OptionScrapbookCopyItemInfoFormatPlainLabel": {
+    "message": "Copy info format:"
+  },
+  "OptionScrapbookCopyItemInfoFormatPlainTooltip": {
+    "message": "This determines the format of copy info.\n\nFollowing “%<param>%” template syntaxes are available:\n• %% - a literal “%”.\n• %id% - item ID.\n• %title% - item title.\n• %comment% - item comment.\n• %source% - item source URL.\n• %url% - item URL.\n• %create-#% - item create time.\n• %modify-#% - item modify time.\n\nThe <param> of %create% and %modify% can be suffixed with “-<time_format>” to specify a time format (using POSIX strftime format), and the <time_format> can be suffixed with “-utc” to use UTC time. For example, “%create-F-utc%” outputs something like “2020-04-01”.\n\nBelow is a list of some frequently used POSIX strftime formats:\n• Y: year with 4 digits\n• y: year with 2 digits\n• m: month with 2 digits (01 to 12)\n• d: date of month with 2 digits (01 to 31)\n• H: hours with 2 digits (00 to 23)\n• M: minutes with 2 digits (00 to 59)\n• S: seconds with 2 digits (00 to 59)\n• F: date (YYYY-MM-DD)\n• T: time (HH:MM:SS)\n\nThe <param> may be suffixed with one or more “:<format>”s to transform the output, such as “%title:oneline:escape_html%”. Available values for the <format> are:\n• oneline: Truncate linefeed and following chars .\n• collapse: Collapse ASCII whitespace chars .\n• url: Escape special chars of URL.\n• escape_html: Escape special chars of HTML, including “<”, “&”, “>”, and “\"”.\n• escape_html_space: Escape special chars of HTML, and convert continuous white spaces into “&nbsp;”s.\n• escape_css: Escape special chars of CSS.\n• json: Convert to a JSON string."
+  },
   "OptionScrapbookDefaultSearchLabel": {
     "message": "Default search condition:"
+  },
+  "OptionScrapbookDefaultSearchTooltip": {
+    "message": "The prefilled search condition. For example, setting this to “-type:separator” makes “keyword” in the search field mean searching “-type:separator keyword”.\n\n• Besides general search commands, “default:” can be used to set the default command. For example, setting this to “default:title” makes “keyword” in the search field mean searching “title:keyword”. (defaults to default:tcc)"
   },
   "OptionScrapbookFulltextCacheRemoteSizeLimitLabel": {
     "message": "Size limit for remote fulltext cache (MiB):"
   },
-  "OptionScrapbookNotifyPageCapturedLabel": {
-    "message": "Show hint when browsing a page having been captured"
+  "OptionScrapbookScrapbookSearchCommentLengthLabel": {
+    "message": "Comment length shown in search results:"
+  },
+  "OptionScrapbookScrapbookSearchContextLengthLabel": {
+    "message": "Context length shown in search results:"
+  },
+  "OptionScrapbookScrapbookSearchSourceLengthLabel": {
+    "message": "Source length shown in search results:"
+  },
+  "OptionScrapbookSidebarEditNoteInNewTabLabel": {
+    "message": "Edit note"
+  },
+  "OptionScrapbookSidebarEditPostitInNewTabLabel": {
+    "message": "Edit post-it"
+  },
+  "OptionScrapbookSidebarInNewTabLabel": {
+    "message": "Open new tab for sidebar operations:"
+  },
+  "OptionScrapbookSidebarOpenInNewTabLabel": {
+    "message": "Open"
+  },
+  "OptionScrapbookSidebarSearchInNewTabLabel": {
+    "message": "Search"
+  },
+  "OptionScrapbookSidebarSourceInNewTabLabel": {
+    "message": "View source"
+  },
+  "OptionScrapbookSidebarViewTextInNewTabLabel": {
+    "message": "View text"
   },
   "OptionServerPasswordLabel": {
     "message": "Password:"
@@ -1124,11 +1173,23 @@
   "OptionUiAutoCloseCaptureDialogNoneLabel": {
     "message": "Disable"
   },
+  "OptionUiNotifyPageCapturedLabel": {
+    "message": "Show hint when browsing a page having been captured"
+  },
+  "OptionUiNotifyPageCapturedTooltip": {
+    "message": "When checked, a badge number of matching items will be shown at the toolbar button, with different color for the matching level: \n• red: same URL (excluding the #-part)\n• yellow: same path (excluding the ?- and #-part)\n• green: same site (same protocol, domain, and port)\n• blue: same domain (e.g. https: and http: or www.example.com and example.com are considered same)\n• gray: same URL captured during the current browser session"
+  },
   "OptionUiShowContextMenuLabel": {
     "message": "Enable context menu"
   },
   "OptionUiToolbarButtonsLabel": {
     "message": "Show toolbar button commands:"
+  },
+  "OptionViewerViewAttachmentsLabel": {
+    "message": "Force open attachments"
+  },
+  "OptionViewerViewAttachmentsTooltip": {
+    "message": "Attachments (files with “Content-Disposition: attachment” HTTP header) are normally downloaded directly without an attempt to open by the browser. Check this option to force opening archive page files that are attachments using the archive page viewer."
   },
   "OptionViewerViewHtzLabel": {
     "message": "View HTZ file"
@@ -1175,6 +1236,9 @@
   "ScrapBookCommandCopyDialogRoot": {
     "message": "Copy into the item of this ID:"
   },
+  "ScrapBookCommandCopyInfo": {
+    "message": "Copy info"
+  },
   "ScrapBookCommandCopyTo": {
     "message": "Copy to"
   },
@@ -1187,11 +1251,11 @@
   "ScrapBookCommandCreateNoteDialogTitle": {
     "message": "Format of the new note:"
   },
-  "ScrapBookCommandCreateSeparator": {
-    "message": "New separator"
-  },
   "ScrapBookCommandCreatePostit": {
     "message": "New post-it"
+  },
+  "ScrapBookCommandCreateSeparator": {
+    "message": "New separator"
   },
   "ScrapBookCommandDelete": {
     "message": "Delete"
@@ -1369,19 +1433,8 @@
       }
     }
   },
-  "ScrapBookErrorDraggedTreeOutdated": {
-    "message": "Tree data of the source page of this drag is outdated. Refresh that page and try again."
-  },
   "ScrapBookErrorInitTree": {
     "message": "Unable to init tree: $REASON$",
-    "placeholders": {
-      "reason": {
-        "content": "$1"
-      }
-    }
-  },
-  "ScrapBookErrorLoadBooks": {
-    "message": "Unable to load scrapbooks: $REASON$",
     "placeholders": {
       "reason": {
         "content": "$1"
@@ -1402,6 +1455,9 @@
   "ScrapBookErrorServerTreeChanged": {
     "message": "Tree data in the server has been changed. Refresh the page and try again."
   },
+  "ScrapBookErrorSourceTreeOutdated": {
+    "message": "Tree data of the source page is outdated. Refresh that page and try again."
+  },
   "ScrapBookNewFolderName": {
     "description": "Default name of a new folder",
     "message": "New Folder"
@@ -1409,6 +1465,9 @@
   "ScrapBookNewNoteName": {
     "description": "Default name of a new note",
     "message": "New Note"
+  },
+  "ScrapBookNoTree": {
+    "message": "This scrapbook is configured to work without an index tree. Visit the index page using the “View index page” command. Manage data using the file manager or the web interface of the backend server."
   },
   "SearchCaptures": {
     "message": "View captured pages"
@@ -1443,13 +1502,25 @@
     }
   },
   "SearchHelpDesc": {
-    "message": "• Input keywords search from title, content, or comment.\n• Use space to separate multiple keywords. For example, “w3c organization” means items containing “w3c” and “organization”.\n• Use double quotes to demark a complete phrase, a literal double quote can be escaped by doubling. For example, “\"Tom \"\"loves\"\" Mary.\"” means items containing “Tom \"loves\" Mary.”\n• Use minus sign to exclude a keyword. For example, “-virus” means items without “virus”.\n• Use “<command>:<keyword>” to specify a special search condition. A minus sign can be prefixed for exclusion or reversion. Available commands include:\n  • mc: each subsequent keyword matches case-sensitively. For example, “mc: CIA FBI -mc: president” means items containing “CIA” and “FBI” case-sensitively, and “president” case-insensitively.\n  • re: each subsequent keyword is treated as a regular expression. For example, “re: \\bcolou?r\\b -re: 1+1=2” means items that match regular expression “\\bcolou?r\\b” and contain keyword “1+1=2”.\n  • id: item whose ID equal to the keyword (or match the regular expression). Multiple values are “or”-connected. For example, “id:2020 id:2021” means items of ID “2020” or “2021”; “-id:2020” means items whose ID is not “2020”.\n  • type: items whose type equal to the keyword (or match the regular expression). Multiple values are “or”-connected. Available types are “” (page), “bookmark”, “file”, “note”, etc. For example, “type: type:bookmark” means items whose type is page or bookmark.\n  • title: items whose title contains the keyword.\n  • content: items whose fulltext contains the keyword.\n  • comment: items whose comment contains the keyword.\n  • tcc: items whose title, fulltext, or comment contains the keyword.\n  • index: items whose index file path contains the keyword.\n  • source: items whose source URL contains the keyword.\n  • icon: items whose icon URL contains the keyword.\n  • create: items whose create time matches the condition. The time condition is an interval with 0-17 digits, followed by a minus sign optionally, and then followed by 0-17 digits. The two 17-digit numbers means the year (4 digits), month (01-12), day (01-31), hours (00-59), minutes (00-59), seconds (00-59), and milliseconds (000-999) in local datetime. Each omitted digit is assumed to be a “0”, except that “999...” is assumed if the end datetime is totally omitted. For example, “create:2014-2015” means since 2014 until 2015; “create:-201309” means before Sep 2013; and “create:20110825” means after Aug 25, 2011.\n  • modify: items whose modify time matches the condition. Time format is same as create.\n  • marked: marked items.\n  • locked: locked items.\n  • file: items whose filename contains the keyword.\n  • root: items under the item of ID. Multiple values are “or”-connected. For example, use “root:recycle” to search within the recycle bin.\n  • book: items in the specific scrapbook (by name). Multiple values are “or”-connected.\n  • sort: sort search results using the specific condition, which can be id, title, comment, file, content, source, type, create, or modify. For example, “sort:id -sort:modify” means sorting by ID in acending order and then sorting by modify time in descending order."
+    "message": "• Input keywords search from title, content, or comment.\n• Use space to separate multiple keywords. For example, “w3c organization” means items containing “w3c” and “organization”.\n• Use double quotes to demark a complete phrase, a literal double quote can be escaped by doubling. For example, “\"Tom \"\"loves\"\" Mary.\"” means items containing “Tom \"loves\" Mary.”\n• Use minus sign to exclude a keyword. For example, “-virus” means items without “virus”.\n• Use “<command>:<keyword>” to specify a special search condition. A minus sign can be prefixed for exclusion or reversion. Available commands include:\n  • mc: each subsequent keyword matches case-sensitively. For example, “mc: CIA FBI -mc: president” means items containing “CIA” and “FBI” case-sensitively, and “president” case-insensitively.\n  • re: each subsequent keyword is treated as a regular expression. For example, “re: \\bcolou?r\\b -re: 1+1=2” means items that match regular expression “\\bcolou?r\\b” and contain keyword “1+1=2”.\n  • id: item whose ID equal to the keyword (or match the regular expression). Multiple values are “or”-connected. For example, “id:2020 id:2021” means items of ID “2020” or “2021”; “-id:2020” means items whose ID is not “2020”.\n  • type: items whose type equal to the keyword (or match the regular expression). Multiple values are “or”-connected. Available types are “” (page), “bookmark”, “file”, “note”, etc. For example, “type: type:bookmark” means items whose type is page or bookmark.\n  • title: items whose title contains the keyword.\n  • content: items whose fulltext contains the keyword.\n  • comment: items whose comment contains the keyword.\n  • tc: items whose title or comment contains the keyword.\n  • tcc: items whose title, fulltext, or comment contains the keyword.\n  • index: items whose index file path contains the keyword.\n  • source: items whose source URL contains the keyword.\n  • icon: items whose icon URL contains the keyword.\n  • charset: items whose charset contains the keyword.\n  • create: items whose create time matches the condition. The time condition is an interval with 0-17 digits, followed by a minus sign optionally, and then followed by 0-17 digits. The two 17-digit numbers means the year (4 digits), month (01-12), day (01-31), hours (00-59), minutes (00-59), seconds (00-59), and milliseconds (000-999) in local datetime. Each omitted digit is assumed to be a “0”, except that “999...” is assumed if the end datetime is totally omitted. For example, “create:2014-2015” means since 2014 until 2015; “create:-201309” means before Sep 2013; and “create:20110825” means after Aug 25, 2011.\n  • modify: items whose modify time matches the condition. Time format is same as create.\n  • marked: marked items.\n  • locked: locked items.\n  • location: items with geolocation information.\n  • file: items whose filename contains the keyword.\n  • root: items under the item of ID. Multiple values are “or”-connected. For example, use “root:recycle” to search within the recycle bin.\n  • book: items in the specific scrapbook (by name). Multiple values are “or”-connected.\n  • sort: sort search results using the specific condition, which can be id, title, comment, file, content, source, type, create, or modify. For example, “sort:id -sort:modify” means sorting by ID in acending order and then sorting by modify time in descending order.\n  • limit: set a limit on the search result number. For example, “limit:10” means showing the first 10 results, “limit:-20” means removing the last 20 results, and “limit:0” or “-limit:” means unsetting the limit."
   },
   "SearchHelpSummary": {
     "message": "Search syntax help"
   },
   "SearchLocateTitle": {
     "message": "Locate this item in scrapbook"
+  },
+  "SearchSortId": {
+    "message": "Sort by ID"
+  },
+  "SearchSortLastCreated": {
+    "message": "Last created"
+  },
+  "SearchSortLastModified": {
+    "message": "Last modified"
+  },
+  "SearchSortTitle": {
+    "message": "Sort by title"
   },
   "SearchTitle": {
     "message": "Search $BOOK$",
@@ -1541,5 +1612,8 @@
         "content": "$1"
       }
     }
+  },
+  "WarnSidebarLoginPromptMissing": {
+    "message": "Click me to login and refresh this page if the browser doesn't prompt for login."
   }
 }

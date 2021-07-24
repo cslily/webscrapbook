@@ -96,9 +96,7 @@
      * @param {Array} params.recurseChain
      * @return {Promise<string>} The object URL of the file.
      */
-    async fetchFile(params) {
-      const {inZipPath, rewriteFunc, recurseChain} = params;
-
+    async fetchFile({inZipPath, rewriteFunc, recurseChain}) {
       const f = viewer.inZipFiles.get(inZipPath);
       if (f) {
         if (rewriteFunc) {
@@ -125,9 +123,7 @@
      * @param {Array} params.recurseChain
      * @return {Promise<string>} The URL of the page.
      */
-    async fetchPage(params) {
-      const {inZipPath, url, recurseChain} = params;
-
+    async fetchPage({inZipPath, url, recurseChain}) {
       let searchAndHash = "";
       if (url) {
         const [base, search, hash] = scrapbook.splitUrl(url);
@@ -135,8 +131,7 @@
       }
       const fetchedUrl = await viewer.fetchFile({
         inZipPath: inZipPath,
-        rewriteFunc: async (params) => {
-          const {data, charset, recurseChain} = params;
+        rewriteFunc: async ({data, charset, recurseChain}) => {
           if (["text/html", "application/xhtml+xml", "image/svg+xml"].includes(data.type)) {
             try {
               const doc = await scrapbook.readFileAsDocument(data);
@@ -164,7 +159,7 @@
      * @param {Array} params.recurseChain
      * @return {Promise<Blob>}
      */
-    async parseDocument(params) {
+    async parseDocument({doc, inZipPath, recurseChain}) {
       const rewriteUrl = function (url, refUrlOverwrite) {
         return viewer.parseUrl(url, refUrlOverwrite || refUrl).url;
       };
@@ -254,7 +249,7 @@
                   if (targetPage !== sourcePage) {
                     if (recurseChain.includes(targetPage)) {
                       // console.warn("Resource '" + sourcePage + "' has a circular reference to '" + targetPage + "'.");
-                      elem.setAttribute("content", metaRefresh.time + ";url=about:blank");
+                      elem.setAttribute("content", metaRefresh.time + "; url=about:blank");
                       break;
                     }
                     if (info.inZip) {
@@ -281,10 +276,10 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 </html>
 `;
                       const url = URL.createObjectURL(new Blob([content], {type: "text/html"})) + targetPageHash;
-                      elem.setAttribute("content", metaRefresh.time + ";url=" + url);
+                      elem.setAttribute("content", metaRefresh.time + "; url=" + url);
                     }
                   } else {
-                    elem.setAttribute("content", metaRefresh.time + (targetPageHash ? ";url=" + targetPageHash : ""));
+                    elem.setAttribute("content", metaRefresh.time + (targetPageHash ? "; url=" + targetPageHash : ""));
                   }
                 }
               }
@@ -528,9 +523,9 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
         return elem;
       };
 
-      const {doc, inZipPath, recurseChain} = params;
-
-      const refUrl = viewer.inZipPathToUrl(inZipPath);
+      const refUrl = doc.baseURI.startsWith('blob:' + browser.runtime.getURL('')) ?
+          viewer.inZipPathToUrl(inZipPath) :
+          doc.baseURI;
       const tasks = [];
 
       // rewrite URLs
@@ -548,13 +543,11 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 
       await Promise.all(tasks);
 
-      const content = scrapbook.doctypeToString(doc.doctype) + doc.documentElement.outerHTML;
+      const content = scrapbook.documentToString(doc);
       return new Blob([content], {type: doc.contentType});
     },
 
-    async processCssFile(params) {
-      const {data, charset, url: refUrl, recurseChain} = params;
-
+    async processCssFile({data, charset, url: refUrl, recurseChain}) {
       return await scrapbook.rewriteCssFile(data, charset, async (text) => {
         return await viewer.processCssText(text, refUrl, recurseChain);
       });
@@ -650,7 +643,33 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
     const urlHash = location.hash;
 
     const frameRegisterLinkLoader = function (frame) {
-      const frameOnLoad = function (frame) {
+      // a[target], area[target], or first base[target]
+      const getTarget = (elem) => {
+        let target = elem.target;
+        if (!target) {
+          const baseElem = elem.ownerDocument.querySelector('base[target]');
+          if (baseElem) {
+            target = baseElem.target;
+          }
+        }
+        if (!target || target === '_self') {
+          target = elem.ownerDocument.defaultView;
+        } else if (target === '_parent') {
+          target = elem.ownerDocument.defaultView.frames.parent;
+        } else if (target === '_top') {
+          target = elem.ownerDocument.defaultView.frames.top;
+        } else if (target === '_blank') {
+          target = '';
+        } else {
+          target = elem.ownerDocument.defaultView.frames[target] || target;
+        }
+        if (target === window) {
+          target = iframe.contentWindow;
+        }
+        return target;
+      };
+
+      const frameOnLoad = (frame) => {
         let frameDoc;
         try {
           frameDoc = frame.contentDocument;
@@ -687,12 +706,16 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
           // ignore non-left click
           if (e.button !== 0) { return; }
 
+          // ignore click with modifier
+          if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) { return; }
+
           // e.target won't work if clicking on a descendant node of an anchor
           const elem = e.target.closest('a[href], area[href]');
           if (!elem) { return; }
 
+          const target = getTarget(elem);
           const url = elem.href;
-          if (frame === iframe) {
+          if (target === iframe.contentWindow) {
             if (url.startsWith("blob:")) {
               // in-zip file link
               const [main, search, hash] = scrapbook.splitUrl(url);
@@ -725,7 +748,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
               e.stopPropagation();
               document.location.assign('about:blank');
             }
-          } else {
+          } else if (typeof target !== 'string') {
             const [main, search, hash] = scrapbook.splitUrl(url);
             const inZipPath = viewer.blobUrlToInZipPath.get(main);
             if (!inZipPath) { return; }
@@ -744,14 +767,20 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 
               const rewrittenUrl = fetchedUrl || "about:blank";
               elem.href = rewrittenUrl;
-              frameDoc.location = rewrittenUrl;
+              target.location = rewrittenUrl;
             }
           }
         }, false);
 
-        Array.prototype.forEach.call(frameDoc.querySelectorAll('frame, iframe'), (elem) => {
+        frame.contentWindow.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.error(`Form submission is forbidden for security reason.`);
+        }, false);
+
+        for (const elem of frameDoc.querySelectorAll('frame, iframe')) {
           frameRegisterLinkLoader(elem);
-        });
+        }
       };
 
       frame.addEventListener("load", (e) => {

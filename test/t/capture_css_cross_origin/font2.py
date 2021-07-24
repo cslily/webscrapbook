@@ -3,8 +3,9 @@ import sys, os
 
 os.chdir(os.path.dirname(__file__))
 sys.stdout.buffer.write("""Content-Type: font/woff
-Content-Disposition: attachment; filename="font2.woff"
+Content-Disposition: inline; filename="font2.woff"
 Access-Control-Allow-Origin: *
 
 """.encode("ASCII"))
-sys.stdout.buffer.write(open("font.woff", 'rb').read())
+with open("font.woff", 'rb') as fh:
+    sys.stdout.buffer.write(fh.read())

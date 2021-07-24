@@ -33,7 +33,6 @@
     isScripted: false,
     serverUrl: null,
     erasedContents: new WeakMap(),
-    history: [],
     lastWindowFocusTime: -1,
     lastWindowBlurTime: -1,
     directToolbarClick: false,
@@ -43,7 +42,7 @@
     },
 
     /**
-     * @return {Object<number~hWidth, number~vWidth>}
+     * @return {Object<integer~hWidth, integer~vWidth>}
      */
     get scrollbar() {
       const elem = document.createElement('div');
@@ -73,11 +72,7 @@ height: 100vh;`;
   /**
    * @kind invokable
    */
-  editor.init = async function ({willActive, force = false}) {
-    if (typeof willActive === "undefined") {
-      willActive = !editor.active;
-    }
-
+  editor.init = async function ({willActive = !editor.active, force = false} = {}) {
     if (!willActive) {
       return editor.close();
     }
@@ -387,6 +382,7 @@ ${sRoot}.toolbar .toolbar-close:hover {
     <button></button>
     <ul hidden="" title="">
       <li><button class="toolbar-locate-viewDirectory">${scrapbook.lang('EditorButtonLocateViewDirectory')}</button></li>
+      <li><button class="toolbar-locate-viewSource">${scrapbook.lang('EditorButtonLocateViewSource')}</button></li>
     </ul>
   </div>
   <div class="toolbar-marker" title="${scrapbook.lang('EditorButtonMarker')}">
@@ -409,6 +405,10 @@ ${sRoot}.toolbar .toolbar-close:hover {
   <div class="toolbar-annotation" title="${scrapbook.lang('EditorButtonAnnotation')}">
     <button></button>
     <ul hidden="" title="">
+      <li><button class="toolbar-annotation-prev">${scrapbook.lang('EditorButtonAnnotationPrev')}</button></li>
+      <li><button class="toolbar-annotation-next">${scrapbook.lang('EditorButtonAnnotationNext')}</button></li>
+      <hr/>
+      <li><button class="toolbar-annotation-link">${scrapbook.lang('EditorButtonAnnotationLink')}</button></li>
       <li><button class="toolbar-annotation-sticky">${scrapbook.lang('EditorButtonAnnotationSticky')}</button></li>
       <li><button class="toolbar-annotation-sticky-richtext">${scrapbook.lang('EditorButtonAnnotationStickyRichText')}</button></li>
     </ul>
@@ -483,6 +483,9 @@ ${sRoot}.toolbar .toolbar-close:hover {
   </div>
   <div class="toolbar-undo" title="${scrapbook.lang('EditorButtonUndo')}">
     <button></button>
+    <ul hidden="" title="">
+      <li><button class="toolbar-undo-toggle" checked="">${scrapbook.lang('EditorButtonUndoToggle')}</button></li>
+    </ul>
   </div>
   <div class="toolbar-save" title="${scrapbook.lang('EditorButtonSave')}">
     <button></button>
@@ -514,6 +517,22 @@ ${sRoot}.toolbar .toolbar-close:hover {
     var elem = wrapper.querySelector('.toolbar-locate-viewDirectory');
     elem.addEventListener("click", (event) => {
       document.location.assign('.');
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('.toolbar-locate-viewSource');
+    elem.addEventListener("click", (event) => {
+      const url = document.documentElement.getAttribute('data-scrapbook-source');
+      try {
+        if (!url) {
+          throw new Error('Source URL record not found.');
+        }
+
+        // The browser may block this if url is file: protocol etc.
+        // However, some browsers (such as Chromium) do not throw an error.
+        document.location.assign(url);
+      } catch (ex) {
+        alert(ex.message);
+      }
     }, {passive: true});
 
     // marker
@@ -551,6 +570,21 @@ ${sRoot}.toolbar .toolbar-close:hover {
       event.preventDefault();
       editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
+
+    var elem = wrapper.querySelector('.toolbar-annotation-prev');
+    elem.addEventListener("click", (event) => {
+      editor.locateAnnotation(-1);
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('.toolbar-annotation-next');
+    elem.addEventListener("click", (event) => {
+      editor.locateAnnotation(1);
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('.toolbar-annotation-link');
+    elem.addEventListener("click", (event) => {
+      editor.createLink();
+    }, {passive: true});
 
     var elem = wrapper.querySelector('.toolbar-annotation-sticky');
     elem.addEventListener("click", (event) => {
@@ -763,7 +797,13 @@ ${sRoot}.toolbar .toolbar-close:hover {
     }, {passive: true});
     elem.addEventListener("contextmenu", (event) => {
       event.preventDefault();
+      editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
+
+    var elem = wrapper.querySelector('.toolbar-undo-toggle');
+    elem.addEventListener("click", (event) => {
+      editor.toggleMutationHandler();
+    }, {passive: true});
 
     // save
     var elem = wrapper.querySelector('.toolbar-save > button:first-of-type');
@@ -815,7 +855,7 @@ ${sRoot}.toolbar .toolbar-close:hover {
   /**
    * @kind invokable
    */
-  editor.lineMarkerInternal = function ({tagName = 'span', attrs = {}}) {
+  editor.lineMarkerInternal = function ({tagName = 'span', attrs = {}} = {}) {
     editor.addHistory();
 
     const hElem = document.createElement(tagName);
@@ -836,8 +876,8 @@ ${sRoot}.toolbar .toolbar-close:hover {
         let endNode = range.endContainer;
         if (range.endOffset) {
           endNode.splitText(range.endOffset);
+          range.setEndAfter(endNode);
         }
-        range.setEndAfter(endNode);
       }
 
       const selectedNodes = scrapbook.getSelectedNodes({
@@ -850,7 +890,7 @@ ${sRoot}.toolbar .toolbar-close:hover {
       let firstWrapper = null;
       let lastWrapper = null;
       for (const node of selectedNodes.reverse()) {
-        if (node.nodeType === 3 && /^[ \f\n\r\t\v]*$/.test(node.nodeValue)) {
+        if (node.nodeType === 3 && /^[\t\n\f\r ]*$/.test(node.nodeValue)) {
           continue;
         }
 
@@ -880,6 +920,130 @@ ${sRoot}.toolbar .toolbar-close:hover {
   /**
    * @kind invokable
    */
+  editor.locateAnnotationInternal = function (...args) {
+    const getAnnotationElems = () => {
+      const rv = [];
+      const checkedIds = new Set();
+      const nodeIterator = document.createNodeIterator(
+        document.documentElement,
+        NodeFilter.SHOW_ELEMENT,
+      );
+      let elem;
+      while (elem = nodeIterator.nextNode()) {
+        if (!(scrapbook.getScrapBookObjectRemoveType(elem) > 0)) {
+          continue;
+        }
+
+        // check the first element among those with the same ID
+        const id = elem.getAttribute('data-scrapbook-id');
+        if (id !== null) {
+          if (checkedIds.has(id)) {
+            continue;
+          }
+          checkedIds.add(id);
+          elem = document.querySelector(`[data-scrapbook-id="${CSS.escape(id)}"]`);
+        }
+
+        if (!elem.offsetParent) {
+          continue;
+        }
+
+        rv.push(elem);
+      }
+      return rv;
+    };
+
+    const getAnnotationRange = (elem) => {
+      const range = document.createRange();
+      range.selectNode(elem);
+
+      const id = elem.getAttribute('data-scrapbook-id');
+      if (id !== null) {
+        const otherRange = document.createRange();
+        for (const elem of document.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`)) {
+          if (!(scrapbook.getScrapBookObjectRemoveType(elem) > 0)) {
+            continue;
+          }
+
+          otherRange.selectNode(elem);
+          if (otherRange.compareBoundaryPoints(Range.END_TO_END, range) > 0) {
+            range.setEndAfter(elem);
+          }
+        }
+      }
+
+      return range;
+    };
+
+    const getCurrentAnnotationIndex = (annotationElems, refSelection = null) => {
+      if (!refSelection) {
+        return -0.5;
+      }
+
+      const currentRange = getValidRange(refSelection);
+      if (!currentRange) {
+        return -0.5;
+      }
+
+      const range = document.createRange();
+      for (let i = 0, I = annotationElems.length; i < I; i++) {
+        const elem = annotationElems[i];
+        range.selectNode(elem);
+        const delta = range.compareBoundaryPoints(Range.START_TO_START, currentRange);
+        if (delta === 0) {
+          return i;
+        }
+        if (delta > 0) {
+          return i - 0.5;
+        }
+      }
+
+      return annotationElems.length - 0.5;
+    };
+
+    const getValidRange = (sel) => {
+      for (let i = 0, I = sel.rangeCount; i < I; i++) {
+        const range = sel.getRangeAt(i);
+        // Firefox may include selection ranges for elements inside the toolbar.
+        // Exclude them to prevent an error.
+        if (editor.internalElement && editor.internalElement.contains(range.commonAncestorContainer)) {
+          continue;
+        }
+        return range;
+      }
+      return null;
+    };
+
+    const fn = editor.locateAnnotationInternal = ({offset = 0} = {}) => {
+      // collect valid annotation elements
+      const annotationElems = getAnnotationElems();
+      if (!annotationElems.length) {
+        return;
+      }
+
+      // find current annotation index
+      const sel = document.getSelection();
+      let index = getCurrentAnnotationIndex(annotationElems, sel);
+      index = offset > 0 ? Math.floor(index) : Math.ceil(index);
+
+      // apply offset
+      index = (index + offset) % annotationElems.length;
+      if (index < 0) { index += annotationElems.length; }
+
+      // select found annotation
+      const elem = annotationElems[index];
+      const range = getAnnotationRange(elem);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      elem.scrollIntoView();
+    };
+
+    return fn(...args);
+  };
+
+  /**
+   * @kind invokable
+   */
   editor.eraseNodesInternal = function () {
     editor.addHistory();
 
@@ -895,7 +1059,7 @@ ${sRoot}.toolbar .toolbar-close:hover {
   /**
    * @kind invokable
    */
-  editor.eraseSelectorInternal = function ({selector}) {
+  editor.eraseSelectorInternal = function (...args) {
     const FORBID_NODES = `\
 html, head, body,
 scrapbook-toolbar, scrapbook-toolbar *,
@@ -920,13 +1084,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         editor.eraseNode(elem, timeId);
       }
     };
-    return fn({selector});
+    return fn(...args);
   };
 
   /**
    * @kind invokable
    */
-  editor.uneraseNodesInternal = function ({}) {
+  editor.uneraseNodesInternal = function () {
     editor.addHistory();
 
     // get selected element nodes with tweaks for boundary selection cases
@@ -943,7 +1107,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.uneraseAllNodesInternal = function ({}) {
+  editor.uneraseAllNodesInternal = function () {
     editor.addHistory();
 
     const unerase = () => {
@@ -974,7 +1138,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.removeEditsInternal = function ({}) {
+  editor.removeEditsInternal = function () {
     editor.addHistory();
 
     // get selected element nodes with tweaks for boundary selection cases
@@ -992,7 +1156,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.removeAllEditsInternal = function ({}) {
+  editor.removeAllEditsInternal = function () {
     editor.addHistory();
 
     const selectedNodes = [];
@@ -1014,17 +1178,16 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.undoInternal = function ({}) {
-    if (!editor.history.length) { return; }
+  editor.undoInternal = function () {
     if (!document.body) { return; }
 
-    document.body.parentNode.replaceChild(editor.history.pop(), document.body);
+    mutationHandler.applyRestorePoint();
   };
 
   /**
    * @kind invokable
    */
-  editor.deleteErasedInternal = function ({}) {
+  editor.deleteErasedInternal = function () {
     editor.addHistory();
 
     const selectedNodes = [];
@@ -1047,7 +1210,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.editTitleInternal = function ({}) {
+  editor.editTitleInternal = function () {
     let title = prompt(scrapbook.lang('EditorButtonSaveEditTitlePrompt'), document.title);
     if (title === null) { return; }
     document.title = title;
@@ -1056,7 +1219,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   /**
    * @kind invokable
    */
-  editor.setViewportInternal = function ({}) {
+  editor.setViewportInternal = function () {
     let viewportElem = document.querySelector('meta[name="viewport"i]');
     let viewportDeclaration = viewportElem ? viewportElem.getAttribute('content') : 'width=device-width, initial-scale=1.0';
     if (viewportElem) {
@@ -1121,6 +1284,43 @@ scrapbook-toolbar, scrapbook-toolbar *,
       cmd: "background.invokeEditorCommand",
       args: {
         frameId: await editor.getFocusedFrameId(),
+        cmd: "editor.lineMarkerInternal",
+        args,
+      },
+    });
+  };
+
+  editor.locateAnnotation = async function (offset) {
+    const frameId = await editor.getFocusedFrameId();
+    const args = {
+      offset,
+    };
+    return await scrapbook.invokeExtensionScript({
+      cmd: "background.invokeEditorCommand",
+      args: {
+        frameId,
+        cmd: "editor.locateAnnotationInternal",
+        args,
+      },
+    });
+  };
+
+  editor.createLink = async function () {
+    const frameId = await editor.getFocusedFrameId();
+    const url = prompt(scrapbook.lang('EditorButtonAnnotationLinkPrompt'));
+    if (!url) { return; }
+    const args = {
+      tagName: 'a',
+      attrs: {
+        'data-scrapbook-id': scrapbook.dateToId(),
+        'data-scrapbook-elem': 'link-url',
+        'href': url,
+      },
+    };
+    return await scrapbook.invokeExtensionScript({
+      cmd: "background.invokeEditorCommand",
+      args: {
+        frameId,
         cmd: "editor.lineMarkerInternal",
         args,
       },
@@ -1327,6 +1527,36 @@ scrapbook-toolbar, scrapbook-toolbar *,
     }
   };
 
+  editor.toggleMutationHandler = async function (willActive) {
+    const editElem = editor.internalElement.querySelector('.toolbar-undo-toggle');
+
+    if (typeof willActive === "undefined") {
+      willActive = !editElem.hasAttribute("checked");
+    }
+
+    if (willActive) {
+      if (editElem.hasAttribute("checked")) {
+        // already active or is doing async activating
+        return;
+      }
+      editElem.setAttribute("checked", "");
+    } else {
+      if (!editElem.hasAttribute("checked")) {
+        // already inactive or is doing async deactivating
+        return;
+      }
+      editElem.removeAttribute("checked");
+    }
+
+    await scrapbook.invokeExtensionScript({
+      cmd: "background.invokeEditorCommand",
+      args: {
+        cmd: "editor.mutationHandler.toggle",
+        args: {willActive},
+      },
+    });
+  };
+
   editor.undo = async function () {
     return await scrapbook.invokeExtensionScript({
       cmd: "background.invokeEditorCommand",
@@ -1339,6 +1569,8 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.save = async function (params = {}) {
+    mutationHandler.addSavePoint();
+
     if (editor.inScrapBook) {
       // prompt a confirm if this page is scripted
       if (editor.isScripted) {
@@ -1602,18 +1834,16 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.updateLineMarkers = async function () {
-    Array.prototype.forEach.call(
-      editor.internalElement.querySelectorAll('.toolbar-marker ul scrapbook-toolbar-samp'),
-      (elem, i) => {
-        let style = scrapbook.getOption(`editor.lineMarker.style.${i + 1}`);
-        elem.setAttribute('style', style);
-        elem.title = style;
-      });
+    for (const [i, elem] of editor.internalElement.querySelectorAll('.toolbar-marker ul scrapbook-toolbar-samp').entries()) {
+      const style = scrapbook.getOption(`editor.lineMarker.style.${i + 1}`);
+      elem.setAttribute('style', style);
+      elem.title = style;
+    }
 
     const buttons = Array.from(editor.internalElement.querySelectorAll('.toolbar-marker ul button'));
-    buttons.forEach((elem) => {
+    for (const elem of buttons) {
       elem.removeAttribute('checked');
-    });
+    }
     let idx = await scrapbook.cache.get(editor.getStatusKey('lineMarkerSelected'), 'storage');
     idx = Math.min(parseInt(idx, 10) || 0, buttons.length - 1);
     buttons[idx].setAttribute('checked', '');
@@ -1658,18 +1888,11 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.eraseRange = function (range, timeId = scrapbook.dateToId()) {
-    const doc = range.commonAncestorContainer.ownerDocument;
-    const wrapper = doc.createElement('scrapbook-erased');
-    range.surroundContents(wrapper);
-    const comment = document.createComment(`scrapbook-erased-${timeId}=${scrapbook.escapeHtmlComment(wrapper.innerHTML)}`);
-    editor.erasedContents.set(comment, wrapper);
-    wrapper.parentNode.replaceChild(comment, wrapper);
+    scrapbook.eraseRange(range, {timeId, mapCommentToWrapper: editor.erasedContents});
   };
 
   editor.eraseNode = function (node, timeId = scrapbook.dateToId()) {
-    const range = new Range();
-    range.selectNode(node);
-    return editor.eraseRange(range, timeId);
+    scrapbook.eraseNode(node, {timeId, mapCommentToWrapper: editor.erasedContents});
   };
 
   /**
@@ -1677,50 +1900,33 @@ scrapbook-toolbar, scrapbook-toolbar *,
    *
    * @return {integer} Scrapbook object remove type of the element.
    */
-  editor.removeScrapBookObject = function (elem) {
+  editor.removeScrapBookObject = function (node) {
     try {
       // not in the DOM tree, skip
-      if (!elem.parentNode) { return -1; }
+      if (!node.isConnected) { return -1; }
     } catch(ex) {
       // not an element or a dead object, skip
       return -1;
     }
-    let type = scrapbook.getScrapBookObjectRemoveType(elem);
+    let type = scrapbook.getScrapBookObjectRemoveType(node);
     switch (type) {
       case 1: {
-        for (const part of scrapbook.getScrapBookObjectsById(elem)) {
+        for (const part of scrapbook.getScrapBookObjectElems(node)) {
           part.remove();
         }
         break;
       }
       case 2: {
-        for (const part of scrapbook.getScrapBookObjectsById(elem)) {
-          scrapbook.unwrapElement(part);
+        for (const part of scrapbook.getScrapBookObjectElems(node)) {
+          scrapbook.unwrapNode(part);
         }
         break;
       }
       case 3: {
-        let wrapper = editor.erasedContents.get(elem);
-
-        // if the erased nodes are still in the stack, recover it
-        if (wrapper) {
-          const frag = elem.ownerDocument.createDocumentFragment();
-          let child;
-          while (child = wrapper.firstChild) { frag.appendChild(child); }
-          elem.parentNode.replaceChild(frag, elem);
-          break;
-        }
-
-        // otherwise, recover from recorded HTML
-        const m = elem.nodeValue.match(/^.+?=([\s\S]*)$/);
-        if (m) {
-          const doc = elem.ownerDocument;
-          const parent = elem.parentNode;
-          const t = doc.createElement('template');
-          t.innerHTML = scrapbook.unescapeHtmlComment(m[1]);
-          parent.replaceChild(doc.importNode(t.content, true), elem);
-          parent.normalize();
-        } else {
+        const unerased = scrapbook.uneraseNode(node, {
+          mapCommentToWrapper: editor.erasedContents,
+        });
+        if (!unerased) {
           // this shouldn't happen
           return -1;
         }
@@ -1731,9 +1937,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.addHistory = () => {
-    if (!document.body) { return; }
-
-    editor.history.push(document.body.cloneNode(true));
+    mutationHandler.addRestorePoint();
   };
 
 
@@ -1754,9 +1958,6 @@ scrapbook-toolbar, scrapbook-toolbar *,
               hElem.setAttribute('data-scrapbook-id', scrapbook.dateToId(date));
             }
           }
-          if (!hElem.hasAttribute('data-scrapbook-id')) {
-            hElem.setAttribute('data-scrapbook-id', scrapbook.dateToId());
-          }
           hElem.setAttribute('data-scrapbook-elem', 'linemarker');
           hElem.setAttribute('style', elem.getAttribute('style'));
           if (elem.hasAttribute('title')) {
@@ -1764,7 +1965,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
           }
 
           const newElems = Array.prototype.map.call(
-            scrapbook.getScrapBookObjectsById(elem),
+            scrapbook.getScrapBookObjectElems(elem),
             (elem) => {
               const newElem = hElem.cloneNode(false);
               let node;
@@ -2091,11 +2292,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
       /**
        * @kind invokable
        */
-      toggle({willActive}) {
-        if (typeof willActive === 'undefined') {
-          willActive = !this.active;
-        }
-
+      toggle({willActive = !this.active} = {}) {
         if (willActive) {
           if (!this.active) {
             this.active = true;
@@ -2146,6 +2343,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
 
         this.saveAll();
 
+        // Retrieve element ID. Generate a new one if none.
+        let id = elem.getAttribute('data-scrapbook-id');
+        if (!id) {
+          id = scrapbook.dateToId();
+          elem.setAttribute('data-scrapbook-id', id);
+        }
+
         // fallback to popup if shadow DOM is not supported
         if (!SHADOW_DOM_SUPPORTED) {
           const annotation0 = elem.title;
@@ -2158,7 +2362,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
             editor.addHistory();
           }
 
-          for (const part of scrapbook.getScrapBookObjectsById(elem)) {
+          for (const part of scrapbook.getScrapBookObjectElems(elem)) {
             if (annotation) {
               part.setAttribute('title', annotation);
             } else {
@@ -2176,7 +2380,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
 
         const popupElem = document.createElement('scrapbook-toolbar-popup');
         popupElem.setAttribute('data-scrapbook-elem', 'toolbar-popup');
-        popupElem.setAttribute('data-scrapbook-id', elem.getAttribute('data-scrapbook-id'));
+        popupElem.setAttribute('data-scrapbook-id', id);
         popupElem.classList.add('editLineMarker');
         popupElem.addEventListener('keydown', (event) => {
           if (event.code === 'Escape') {
@@ -2290,7 +2494,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
 
         const annotation = popupElem.shadowRoot.querySelector('textarea').value;
         popupElem.remove();
-        for (const part of scrapbook.getScrapBookObjectsById(popupElem)) {
+        for (const part of scrapbook.getScrapBookObjectElems(popupElem)) {
           part.classList.remove('editing');
           if (!part.classList.length) { part.removeAttribute('class'); }
           if (annotation) {
@@ -2311,7 +2515,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
        * @param {Node|false} [refNode] - The ref node to create a sticky note around.
        *     Auto-detected by selection when unspecified. False to not create a relative note.
        */
-      createSticky({richText, refNode}) {
+      createSticky({richText, refNode} = {}) {
         if (!SHADOW_DOM_SUPPORTED) { return; }
 
         editor.addHistory();
@@ -2583,16 +2787,10 @@ scrapbook-toolbar, scrapbook-toolbar *,
       '.scrapbook-block-comment', // SB < 0.19?
     ].join(', ');
 
-    const mapElemOutline = new WeakMap();
-    const mapElemOutlinePriority = new WeakMap();
-    const mapElemCursor = new WeakMap();
-    const mapElemCursorPriority = new WeakMap();
-    const mapElemHadStyleAttr = new WeakMap();
-    const mapElemTooltip = new WeakMap();
-
     let lastTarget = null;
     let lastTouchTarget = null;
     let tooltipElem = null;
+    const mapMarkedNodes = new Map();
     let mapExpandStack = new WeakMap();
 
     const onTouchStart = (event) => {
@@ -2688,11 +2886,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
       /**
        * @kind invokable
        */
-      toggle({willActive}) {
-        if (typeof willActive === 'undefined') {
-          willActive = !this.active;
-        }
-
+      toggle({willActive = !this.active} = {}) {
         if (willActive) {
           if (!this.active) {
             this.active = true;
@@ -2701,11 +2895,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
             window.addEventListener('mousedown', onMouseDown, true);
             window.addEventListener('click', onClick, true);
             window.addEventListener("keydown", onKeyDown, true);
+            mutationHandler.startSpecialMode();
           }
         } else {
           if (this.active) {
             this.active = false;
             domEraser.clearTarget();
+            mutationHandler.endSpecialMode();
             window.removeEventListener('touchstart', onTouchStart, true);
             window.removeEventListener('mouseover', onMouseOver, true);
             window.removeEventListener('mousedown', onMouseDown, true);
@@ -2763,18 +2959,22 @@ scrapbook-toolbar, scrapbook-toolbar *,
           var labelHtml = scrapbook.escapeHtml(scrapbook.lang("EditorButtonDOMEraserRemoveEdit"), false, false, true);
         }
 
+        mutationHandler.addIgnoreStartPoint();
+
         // outline
-        // elements like math doesn't implement the .style property and could throw an error
-        try {
-          mapElemHadStyleAttr.set(elem, elem.hasAttribute('style'));
-          mapElemOutline.set(elem, elem.style.getPropertyValue('outline'));
-          mapElemOutlinePriority.set(elem, elem.style.getPropertyPriority('outline'));
-          mapElemCursor.set(elem, elem.style.getPropertyValue('cursor'));
-          mapElemCursorPriority.set(elem, elem.style.getPropertyPriority('cursor'));
-          elem.style.setProperty('outline', outlineStyle, 'important');
-          elem.style.setProperty('cursor', 'pointer', 'important');
-        } catch (ex) {
-          // pass
+        for (const elem of scrapbook.getScrapBookObjectElems(lastTarget)) {
+          // elements like math doesn't implement the .style property and could throw an error
+          if (elem.style) {
+            mapMarkedNodes.set(elem, {
+              hasStyle: elem.hasAttribute('style'),
+              outline: elem.style.getPropertyValue('outline'),
+              outlinePriority: elem.style.getPropertyPriority('outline'),
+              cursor: elem.style.getPropertyValue('cursor'),
+              cursorPriority: elem.style.getPropertyPriority('cursor'),
+            });
+            elem.style.setProperty('outline', outlineStyle, 'important');
+            elem.style.setProperty('cursor', 'pointer', 'important');
+          }
         }
 
         // tooltip
@@ -2808,6 +3008,8 @@ scrapbook-toolbar, scrapbook-toolbar *,
         labelElem.style.setProperty('left', anchorPos.left + 'px', 'important');
         labelElem.style.setProperty('top', anchorPos.top + 'px', 'important');
 
+        mutationHandler.addIgnoreEndPoint();
+
         tooltipElem = labelElem;
         return lastTarget;
       },
@@ -2816,21 +3018,26 @@ scrapbook-toolbar, scrapbook-toolbar *,
         let elem = lastTarget;
         if (!elem) { return; }
 
+        mutationHandler.addIgnoreStartPoint();
+
         // outline
-        // elements like math doesn't implement the .style property and could throw an error
-        try {
-          elem.style.setProperty('outline', mapElemOutline.get(elem), mapElemOutlinePriority.get(elem));
-          elem.style.setProperty('cursor', mapElemCursor.get(elem), mapElemCursorPriority.get(elem));
-          if (!elem.getAttribute('style') && !mapElemHadStyleAttr.get(elem)) { elem.removeAttribute('style'); }
-        } catch (ex) {
-          // pass
+        for (const [elem, info] of mapMarkedNodes) {
+          // elements like math doesn't implement the .style property and could throw an error
+          if (elem.style) {
+            elem.style.setProperty('outline', info.outline, info.outlinePriority);
+            elem.style.setProperty('cursor', info.cursor, info.cursorPriority);
+            if (!elem.getAttribute('style') && !info.hasStyle) { elem.removeAttribute('style'); }
+          }
         }
+        mapMarkedNodes.clear();
 
         // tooltip
         if (tooltipElem) {
           tooltipElem.remove();
           tooltipElem = null;
         }
+
+        mutationHandler.addIgnoreEndPoint();
 
         // unset lastTarget
         lastTarget = null;
@@ -2902,11 +3109,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
     /**
      * @kind invokable
      */
-    async toggle({willActive}) {
-      if (typeof willActive === 'undefined') {
-        willActive = !this.active;
-      }
-
+    async toggle({willActive = !this.active} = {}) {
       if (willActive) {
         if (!this.active) {
           this.active = true;
@@ -2982,24 +3185,26 @@ scrapbook-toolbar, scrapbook-toolbar *,
     },
 
     async foreColor() {
+      const frameId = await editor.getFocusedFrameId();
       const color = prompt(scrapbook.lang('EditorButtonHtmlEditorFgColorPrompt'));
       if (!color) { return; }
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
-          frameId: await editor.getFocusedFrameId(),
+          frameId,
           code: `document.execCommand('styleWithCSS', false, true); document.execCommand('foreColor', false, "${scrapbook.escapeQuotes(color)}");`,
         },
       });
     },
 
     async hiliteColor() {
+      const frameId = await editor.getFocusedFrameId();
       const color = prompt(scrapbook.lang('EditorButtonHtmlEditorBgColorPrompt'));
       if (!color) { return; }
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
-          frameId: await editor.getFocusedFrameId(),
+          frameId,
           code: `document.execCommand('styleWithCSS', false, true); document.execCommand('hiliteColor', false, "${scrapbook.escapeQuotes(color)}");`,
         },
       });
@@ -3176,12 +3381,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
     },
 
     async createLink() {
+      const frameId = await editor.getFocusedFrameId();
       const url = prompt(scrapbook.lang('EditorButtonHtmlEditorCreateLinkPrompt'));
       if (!url) { return; }
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
-          frameId: await editor.getFocusedFrameId(),
+          frameId,
           code: `document.execCommand('createLink', false, "${scrapbook.escapeQuotes(url)}");`,
         },
       });
@@ -3221,12 +3427,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
     },
 
     async insertHtml() {
+      const frameId = await editor.getFocusedFrameId();
       const html = prompt(scrapbook.lang('EditorButtonHtmlEditorInsertHtmlPrompt'));
       if (!html) { return; }
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
-          frameId: await editor.getFocusedFrameId(),
+          frameId,
           code: `document.execCommand('insertHTML', false, "${scrapbook.escapeQuotes(html)}");`,
         },
       });
@@ -3252,6 +3459,257 @@ scrapbook-toolbar, scrapbook-toolbar *,
       });
     },
   };
+
+
+  const mutationHandler = editor.mutationHandler = (function () {
+    const MUTATION_COMMAND_NAME = 'scrapbook-command';
+
+    const MUTATION_OBSERVER_OPTIONS = {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeOldValue: true,
+      characterData: true,
+      characterDataOldValue: true,
+    };
+
+    const MUTATION_OBSERVER = new MutationObserver((mutationList, observer) => {
+      for (const mutation of mutationList) {
+        mutationHandler.history.push(mutation);
+      }
+    });
+
+    const mutationHandler = {
+      active: true,
+      history: [],
+
+      /**
+       * @kind invokable
+       */
+      toggle({willActive = !this.active} = {}) {
+        if (willActive) {
+          if (!this.active) {
+            this.active = true;
+          }
+        } else {
+          if (this.active) {
+            this.active = false;
+            this.flushPendingMutations();
+            MUTATION_OBSERVER.disconnect();
+            this.history = [];
+          }
+        }
+      },
+
+      flushPendingMutations() {
+        for (const entry of MUTATION_OBSERVER.takeRecords()) {
+          this.history.push(entry);
+        }
+      },
+
+      /**
+       * Start the special mode, in which ignored mutations can be defined.
+       *
+       * All ignored mutations should sum up to null mutation when
+       * the special mode ends.
+       */
+      startSpecialMode() {
+        if (!this.active) { return; }
+
+        this.flushPendingMutations();
+
+        // start observing since first add
+        if (!this.history.length) {
+          MUTATION_OBSERVER.observe(document.body, MUTATION_OBSERVER_OPTIONS);
+        }
+
+        this.history.push({
+          type: MUTATION_COMMAND_NAME,
+          name: 'special',
+          timestamp: Date.now(),
+        });
+      },
+
+      /**
+       * End special mode and tidy ignored mutations out of the history.
+       */
+      endSpecialMode() {
+        if (!this.active) { return; }
+        if (!this.history.length) { return; }
+
+        this.flushPendingMutations();
+
+        let i = this.history.length - 1;
+        while (i >= 0) {
+          const entry = this.history[i];
+          if (entry.type === MUTATION_COMMAND_NAME && entry.name === 'special') {
+            break;
+          }
+          i--;
+        }
+        if (i < 0) { return; }
+
+        const targetPoint = i;
+
+        // disconnect mutation observer
+        MUTATION_OBSERVER.disconnect();
+
+        // tidy ignored history during special mode
+        const historyTidied = [];
+        let ignoring = false;
+        for (i = this.history.length - 1; i >= targetPoint; i--) {
+          const entry = this.history.pop();
+          if (entry.type === MUTATION_COMMAND_NAME) {
+            if (entry.name === 'ignore-end') {
+              ignoring = true;
+              continue;
+            }
+            if (entry.name === 'ignore-start') {
+              ignoring = false;
+              continue;
+            }
+            if (entry.name === 'special') {
+              break;
+            }
+          }
+
+          if (!ignoring) {
+            historyTidied.push(entry);
+          }
+        }
+
+        for (const entry of historyTidied.reverse()) {
+          this.history.push(entry);
+        }
+
+        // re-observe if there are still history
+        if (this.history.length) {
+          MUTATION_OBSERVER.observe(document.body, MUTATION_OBSERVER_OPTIONS);
+        }
+      },
+
+      addIgnoreStartPoint() {
+        if (!this.active) { return; }
+        if (!this.history.length) { return; }
+
+        this.flushPendingMutations();
+
+        this.history.push({
+          type: MUTATION_COMMAND_NAME,
+          name: 'ignore-start',
+          timestamp: Date.now(),
+        });
+      },
+
+      addIgnoreEndPoint() {
+        if (!this.active) { return; }
+        if (!this.history.length) { return; }
+
+        this.flushPendingMutations();
+
+        this.history.push({
+          type: MUTATION_COMMAND_NAME,
+          name: 'ignore-end',
+          timestamp: Date.now(),
+        });
+      },
+
+      addRestorePoint() {
+        if (!this.active) { return; }
+
+        this.flushPendingMutations();
+
+        // start observing since first add
+        if (!this.history.length) {
+          MUTATION_OBSERVER.observe(document.body, MUTATION_OBSERVER_OPTIONS);
+        }
+
+        this.history.push({
+          type: MUTATION_COMMAND_NAME,
+          name: 'point',
+          timestamp: Date.now(),
+        });
+      },
+
+      applyRestorePoint() {
+        if (!this.active) { return; }
+        if (!this.history.length) { return; }
+
+        this.flushPendingMutations();
+
+        let i = this.history.length - 1;
+        while (i >= 0) {
+          const entry = this.history[i];
+          if (entry.type === MUTATION_COMMAND_NAME && entry.name === 'point') {
+            break;
+          }
+          i--;
+        }
+        if (i < 0) { return; }
+
+        const targetPoint = i;
+
+        // disconnect mutation observer
+        MUTATION_OBSERVER.disconnect();
+
+        // apply restore point
+        for (i = this.history.length - 1; i >= targetPoint; i--) {
+          const entry = this.history.pop();
+          if (entry.type === MUTATION_COMMAND_NAME) { continue; }
+
+          switch (entry.type) {
+            case 'attributes': {
+              if (entry.oldValue === null) {
+                entry.target.removeAttributeNS(entry.attributeNamespace, entry.attributeName);
+              } else {
+                entry.target.setAttributeNS(entry.attributeNamespace, entry.attributeName, entry.oldValue);
+              }
+              break;
+            }
+            case 'characterData': {
+              entry.target.textContent = entry.oldValue;
+              break;
+            }
+            case 'childList': {
+              if (entry.addedNodes.length) {
+                for (const node of entry.addedNodes) {
+                  node.remove();
+                }
+              }
+
+              if (entry.removedNodes.length) {
+                for (const node of entry.removedNodes) {
+                  entry.target.insertBefore(node, entry.nextSibling);
+                }
+              }
+
+              break;
+            }
+          }
+        }
+
+        // re-observe if there are still history
+        if (this.history.length) {
+          MUTATION_OBSERVER.observe(document.body, MUTATION_OBSERVER_OPTIONS);
+        }
+      },
+
+      addSavePoint() {
+        if (!this.active) { return; }
+        if (!this.history.length) { return; }
+
+        this.flushPendingMutations();
+
+        this.history.push({
+          type: MUTATION_COMMAND_NAME,
+          name: 'save',
+          timestamp: Date.now(),
+        });
+      },
+    };
+
+    return mutationHandler;
+  })();
 
 
   window.addEventListener("focus", (event) => {
@@ -3295,9 +3753,9 @@ scrapbook-toolbar, scrapbook-toolbar *,
             if (node.matches(frameNodeSelector)) {
               frameAddObserver(node);
             } else {
-              Array.prototype.forEach.call(node.querySelectorAll(frameNodeSelector), (elem) => {
+              for (const elem of node.querySelectorAll(frameNodeSelector)) {
                 frameAddObserver(elem);
-              });
+              }
             }
           }
         }
@@ -3306,9 +3764,9 @@ scrapbook-toolbar, scrapbook-toolbar *,
     const docObserverConf = {childList: true, subtree: true};
 
     docObserver.observe(document.documentElement, docObserverConf);
-    Array.prototype.forEach.call(document.querySelectorAll(frameNodeSelector), (elem) => {
+    for (const elem of document.querySelectorAll(frameNodeSelector)) {
       frameAddObserver(elem);
-    });
+    }
   }
 
   return editor;

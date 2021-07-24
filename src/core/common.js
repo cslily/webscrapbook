@@ -32,16 +32,17 @@ if (Node && !Node.prototype.getRootNode) {
     root.JSZip,
     root.jsSHA,
     root.Mime,
+    root.Strftime,
     window,
     console,
     crypto,
     navigator,
   );
-}(this, function (isDebug, browser, JSZip, jsSHA, Mime, window, console, crypto, navigator) {
+}(this, function (isDebug, browser, JSZip, jsSHA, Mime, Strftime, window, console, crypto, navigator) {
 
   'use strict';
 
-  const BACKEND_MIN_VERSION = '0.29.0';
+  const BACKEND_MIN_VERSION = '0.36.0';
 
   const DEFAULT_OPTIONS = {
     "ui.toolbar.showCaptureTab": true,
@@ -56,17 +57,18 @@ if (Node && !Node.prototype.getRootNode) {
     "ui.toolbar.showOpenViewer": true,
     "ui.toolbar.showOpenOptions": true,
     "ui.showContextMenu": true,
-    "ui.autoCloseCaptureDialog": "none",
+    "ui.autoCloseCaptureDialog": "none", // "none", "nowarn", "noerror", "nofailure", "always"
+    "ui.notifyPageCaptured": false,
     "server.url": "",
     "server.user": "",
     "server.password": "",
     "capture.serverUploadWorkers": 4,
     "capture.serverUploadRetryCount": 2,
     "capture.serverUploadRetryDelay": 2000,
-    "capture.saveTo": "folder", // "server", "folder", "memory"
+    "capture.saveTo": "folder", // "server", "folder", "file", "memory"
     "capture.saveFolder": "WebScrapBook/data",
     "capture.saveAs": "folder", // "folder", "zip", "maff", "singleHtml"
-    "capture.saveFilename": "%ID%",
+    "capture.saveFilename": "%id%",
     "capture.saveFilenameMaxLenUtf16": 120,
     "capture.saveFilenameMaxLenUtf8": 240,
     "capture.saveAsciiFilename": false,
@@ -94,8 +96,11 @@ if (Node && !Node.prototype.getRootNode) {
     "capture.mergeCssResources": true,
     "capture.script": "remove", // "save", "link", "blank", "remove"
     "capture.noscript": "save", // "save", "blank", "remove"
+    "capture.contentSecurityPolicy": "remove", // "save", "remove"
+    "capture.preload": "remove", // "blank", "remove"
+    "capture.prefetch": "remove", // "blank", "remove"
     "capture.base": "blank", // "save", "blank", "remove"
-    "capture.formStatus": "keep", // "keep", "reset"
+    "capture.formStatus": "keep", // "save-all", "save", "keep-all", "keep", "html-all", "html", "reset"
     "capture.shadowDom": "save", // "save", "remove"
     "capture.removeHidden": "none", // "none", "undisplayed"
     "capture.linkUnsavedUri": false,
@@ -105,11 +110,11 @@ if (Node && !Node.prototype.getRootNode) {
     "capture.downLink.doc.delay": null,
     "capture.downLink.doc.urlFilter": "",
     "capture.downLink.urlFilter": "###skip common logout URL\n/[/=]logout\\b/i",
-    "capture.removeIntegrity": true,
     "capture.referrerPolicy": "strict-origin-when-cross-origin", // "no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"
     "capture.referrerSpoofSource": false,
     "capture.recordDocumentMeta": true,
     "capture.recordRewrites": false,
+    "capture.prettyPrint": false,
     "capture.insertInfoBar": false,
     "capture.helpersEnabled": false,
     "capture.helpers": "",
@@ -118,16 +123,18 @@ if (Node && !Node.prototype.getRootNode) {
     "capture.deleteErasedOnSave": false,
     "capture.backupForRecapture": true,
     "capture.zipCompressLevel": null,
+    "autocapture.enabled": false,
+    "autocapture.rules": "",
     "editor.autoInit": true,
     "editor.useNativeTags": false,
     "editor.lineMarker.style.1": "background: #FFFF00; background: linear-gradient(transparent 40%, rgba(255,255,0,0.9) 90%, transparent 100%);",
     "editor.lineMarker.style.2": "background: #00FF00; background: linear-gradient(transparent 40%, rgba(0,255,0,0.9) 90%, transparent 100%);",
     "editor.lineMarker.style.3": "background: #FF0000; background: linear-gradient(transparent 40%, rgba(255,0,0,0.9) 90%, transparent 100%);",
     "editor.lineMarker.style.4": "background: #0000FF; background: linear-gradient(transparent 40%, rgba(0,0,255,0.9) 90%, transparent 100%);",
-    "editor.lineMarker.style.5": "background-color: #FFFF7C; color: black;",
-    "editor.lineMarker.style.6": "background-color: #93EF8D; color: black;",
-    "editor.lineMarker.style.7": "background-color: #FFBBB6; color: black;",
-    "editor.lineMarker.style.8": "background-color: #95D0FF; color: black;",
+    "editor.lineMarker.style.5": "border-bottom: medium solid #FFFF33;",
+    "editor.lineMarker.style.6": "border-bottom: medium solid #33FF33;",
+    "editor.lineMarker.style.7": "border-bottom: medium solid #FF3333;",
+    "editor.lineMarker.style.8": "border-bottom: medium solid #3333FF;",
     "editor.lineMarker.style.9": "background-color: #FFFF99; color: #000000; border: thin dashed #FFCC00;",
     "editor.lineMarker.style.10": "background-color: #CCFFFF; color: #000000; border: thin solid #0099FF;",
     "editor.lineMarker.style.11": "background-color: #EE3311; color: #FFFFFF; font-weight: bold;",
@@ -136,6 +143,7 @@ if (Node && !Node.prototype.getRootNode) {
     "editor.insertDateFormatIsUtc": false,
     "viewer.viewHtz": true,
     "viewer.viewMaff": true,
+    "viewer.viewAttachments": false,
     "indexer.createStaticSite": false,
     "indexer.createStaticIndex": false,
     "indexer.createRssFeed": false,
@@ -157,8 +165,19 @@ if (Node && !Node.prototype.getRootNode) {
     "checker.resolveAbsoluteIcon": true,
     "checker.resolveUnusedIcon": true,
     "checker.makeBackup": true,
-    "scrapbook.notifyPageCaptured": false,
+    "scrapbook.sidebarOpenInNewTab": false,
+    "scrapbook.sidebarSourceInNewTab": false,
+    "scrapbook.sidebarViewTextInNewTab": false,
+    "scrapbook.sidebarEditNoteInNewTab": false,
+    "scrapbook.sidebarEditPostitInNewTab": false,
+    "scrapbook.sidebarSearchInNewTab": true,
+    "scrapbook.copyItemInfoFormatPlain": "%id%",
+    "scrapbook.copyItemInfoFormatHtml": "",
+    "scrapbook.transactionAutoBackup": true,
     "scrapbook.defaultSearch": "-type:folder -type:separator",
+    "scrapbook.searchCommentLength": 100,
+    "scrapbook.searchContextLength": 120,
+    "scrapbook.searchSourceLength": null,
     "scrapbook.fulltextCacheRemoteSizeLimit": null,
     "scrapbook.fulltextCacheUpdateThreshold": 5 * 24 * 60 * 60 * 1000,
     "geolocation.enableHighAccuracy": true,
@@ -254,6 +273,12 @@ if (Node && !Node.prototype.getRootNode) {
     511: "Network Authentication Required",
   };
 
+  const DOMPARSER_SUPPORT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/xml', 'application/xml', 'image/svg+xml']);
+
+  const SCRAPBOOK_OBJECT_REMOVE_TYPE_REMOVE = new Set(["annotation", "freenote", "sticky", "block-comment", "custom"]);
+  const SCRAPBOOK_OBJECT_REMOVE_TYPE_UNWRAP = new Set(["linemarker", "inline", "link-url", "link-inner", "link-file", "custom-wrapper"]);
+  const SCRAPBOOK_OBJECT_REMOVE_TYPE_UNCOMMENT = new Set(["erased"]);
+
   const ANNOTATION_CSS = `\
 [data-scrapbook-elem="linemarker"][title] {
   cursor: help;
@@ -296,6 +321,7 @@ if (Node && !Node.prototype.getRootNode) {
 
   const scrapbook = {
     BACKEND_MIN_VERSION,
+    DEFAULT_OPTIONS,
     ANNOTATION_CSS,
 
     /**
@@ -378,96 +404,86 @@ if (Node && !Node.prototype.getRootNode) {
    * Options
    ***************************************************************************/
 
-  scrapbook.options = DEFAULT_OPTIONS;
-  scrapbook.isOptionsSynced = false;
+  scrapbook.options = null;
 
   /**
-   * - Firefox < 52: browser.storage.sync === undefined
-   *
-   * - Firefox 52: webextensions.storage.sync.enabled is default to false,
-   *   and browser.storage.sync.*() gets an error.
-   *
-   * - Firefox >= 53: webextensions.storage.sync.enabled is default to true,
-   *   and browser.storage.sync.*() works.
-   *
-   * An error would occur if the user manually sets
-   * webextensions.storage.sync.enabled to false without restarting Firefox.
-   * We don't (and probably cannot) support such user operation since we
-   * cannot migrate configs from storage.sync to storage.local when it gets
-   * disabled, and we get an inconsistent status if we simply shift configs
-   * from storage.sync to storage.local.
-   */
-  scrapbook.getOptionStorage = async function () {
-    const storage = (async () => {
-      if (!browser.storage.sync) {
-        return browser.storage.local;
-      }
-      try {
-        await browser.storage.sync.get({});
-        return browser.storage.sync;
-      } catch (ex) {
-        return browser.storage.local;
-      }
-    })();
-    scrapbook.getOptionStorage = () => storage;
-    return storage;
-  };
-
-  /**
-   * run scrapbook.loadOptions before calling this
-   */
-  scrapbook.getOption = function (key, defaultValue) {
-    if (!scrapbook.isOptionsSynced) {
-      throw new Error('Options not synced yet.');
-    }
-
-    let result = scrapbook.options[key];
-    if (result === undefined) {
-      result = defaultValue;
-    }
-    return result;
-  };
-
-  /**
-   * run scrapbook.loadOptions before calling this
-   */
-  scrapbook.getOptions = function (keyPrefix) {
-    if (!scrapbook.isOptionsSynced) {
-      throw new Error('Options not synced yet.');
-    }
-
-    let result = {};
-    let regex = new RegExp("^" + scrapbook.escapeRegExp(keyPrefix) + "\\.");
-    for (let key in scrapbook.options) {
-      if (regex.test(key)) {
-        result[key] = scrapbook.getOption(key);
-      }
-    }
-    return result;
-  };
-
-  scrapbook.setOption = async function (key, value) {
-    scrapbook.options[key] = value;
-    const storage = await scrapbook.getOptionStorage();
-    return await storage.set({[key]: value});
-  };
-
-  /**
-   * load all options and store in scrapbook.options for later usage
+   * Load all options and store in scrapbook.options for sync retrieval.
    */
   scrapbook.loadOptions = async function () {
-    const storage = await scrapbook.getOptionStorage();
-    const items = await storage.get(scrapbook.options);
-    for (let i in items) {
-      scrapbook.options[i] = items[i];
-    }
-    scrapbook.isOptionsSynced = true;
-    return items;
+    scrapbook.options = await scrapbook.getOptions();
+    return scrapbook.options;
   };
 
-  scrapbook.saveOptions = async function () {
-    const storage = await scrapbook.getOptionStorage();
-    return await storage.set(scrapbook.options);
+  /**
+   * @param {string} key
+   * @param {Object} [options]
+   * @return {*|Promise<*>}
+   */
+  scrapbook.getOption = function (key, options = scrapbook.options) {
+    if (options) {
+      return options[key];
+    }
+    const args = {[key]: DEFAULT_OPTIONS[key]};
+    return browser.storage.sync.get(args).catch((ex) => {
+      return browser.storage.local.get(args);
+    }).then((response) => {
+      return response[key];
+    });
+  };
+
+  /**
+   * Use storage.sync if available. Fallback to storage.local and passed values.
+   *
+   * - Firefox < 52: browser.storage.sync === undefined
+   *
+   * - Firefox 52: browser.storage.sync.*() gets an error if
+   *     webextensions.storage.sync.enabled is false, which is default.
+   *
+   * - Firefox >= 53: webextensions.storage.sync.enabled is default to true
+   *
+   * @param {null|string|string[]|Object} [keys] - Fallback to DEFAULT_OPTIONS
+   *     when passing non-object.
+   * @param {Object} [options]
+   * @return {Object|Promise<Object>}
+   */
+  scrapbook.getOptions = function (keys = DEFAULT_OPTIONS, options = scrapbook.options) {
+    if (typeof keys === "string") {
+      const regex = new RegExp("^" + scrapbook.escapeRegExp(keys) + "(?:\\.|$)");
+      keys = {};
+      for (const key in DEFAULT_OPTIONS) {
+        if (regex.test(key)) {
+          keys[key] = DEFAULT_OPTIONS[key];
+        }
+      }
+    } else if (Array.isArray(keys)) {
+      keys = keys.reduce((rv, key) => {
+        rv[key] = DEFAULT_OPTIONS[key];
+        return rv;
+      }, {});
+    } else if (keys === null) {
+      keys = DEFAULT_OPTIONS;
+    }
+    if (options) {
+      const rv = {};
+      for (const key in keys) {
+        rv[key] = options[key];
+      }
+      return rv;
+    }
+    return browser.storage.sync.get(keys).catch((ex) => {
+      return browser.storage.local.get(keys);
+    });
+  };
+
+  /**
+   * Use storage.sync if available. Fallback to storage.local.
+   *
+   * @param {Object} keys
+   */
+  scrapbook.setOptions = async function (keys) {
+    return browser.storage.sync.set(keys).catch((ex) => {
+      return browser.storage.local.set(keys);
+    });
   };
 
 
@@ -560,7 +576,7 @@ if (Node && !Node.prototype.getRootNode) {
     },
 
     /**
-     * @param {Object|Function|string} filter
+     * @param {string|Object|Function} filter
      */
     async getAll(filter, cache = this.current) {
       if (typeof filter === 'function') {
@@ -585,13 +601,18 @@ if (Node && !Node.prototype.getRootNode) {
     },
 
     /**
-     * @param {string|Object|Array} keys - a key (string or Object) or an array of keys
+     * @param {string|Object|string[]|Object[]|Function} keys - a filter
+     *     function or a key (string or Object) or an array of keys
      */
     async remove(keys, cache = this.current) {
-      if (!Array.isArray(keys)) { keys = [keys]; }
-      keys = keys.map((key) => {
-        return (typeof key === "string") ? key : JSON.stringify(key);
-      });
+      if (typeof keys !== 'function') {
+        if (!Array.isArray(keys)) {
+          keys = [keys];
+        }
+        keys = keys.map((key) => {
+          return (typeof key === "string") ? key : JSON.stringify(key);
+        });
+      }
       return this[cache].remove(keys);
     },
 
@@ -647,23 +668,28 @@ if (Node && !Node.prototype.getRootNode) {
       },
 
       async remove(keys) {
+        if (typeof keys === 'function') {
+          keys = Object.keys(await this.getAll(keys));
+        }
         return await browser.storage.local.remove(keys);
       },
     },
 
     indexedDB: {
-      async connect() {
+      async _connect() {
         const p = new Promise((resolve, reject) => {
-          const request = indexedDB.open("scrapbook", 2);
+          const request = indexedDB.open("scrapbook", 3);
           request.onupgradeneeded = (event) => {
             let db = event.target.result;
             if (event.oldVersion === 1) {
               db.deleteObjectStore("archiveZipFiles");
+            } else if (event.oldVersion === 2) {
+              db.deleteObjectStore("cache");
             }
-            db.createObjectStore("cache", {keyPath: "key"});
+            db.createObjectStore("cache");
           };
           request.onblocked = (event) => {
-            reject("Upgrade of the indexedDB is blocked by another connection.");
+            reject(new Error("Upgrade of the indexedDB is blocked by another connection."));
           };
           request.onsuccess = (event) => {
             resolve(event.target.result);
@@ -672,93 +698,97 @@ if (Node && !Node.prototype.getRootNode) {
             reject(event.target.error);
           };
         });
-        this.connect = () => p;
+        this._connect = () => p;
         return p;
       },
 
-      async get(key) {
-        const db = await this.connect();
-        const transaction = db.transaction("cache", "readonly");
-        const objectStore = transaction.objectStore(["cache"]);
-
+      async _transaction(callback, mode, options) {
+        const db = await this._connect();
+        const transaction = db.transaction("cache", mode, options);
+        const objectStore = transaction.objectStore("cache");
         return await new Promise((resolve, reject) => {
-          const request = objectStore.get(key);
-          request.onsuccess = function (event) {
-            const result = event.target.result;
-            resolve(result ? result.value : undefined);
+          // transaction is available from objectStore.transaction
+          const result = callback.call(this, objectStore);
+
+          transaction.oncomplete = (event) => {
+            resolve(result);
           };
-          request.onerror = function (event) {
+
+          transaction.onerror = (event) => {
+            // unhandled error for IDBRequest will bubble up to transaction error
             reject(event.target.error);
           };
+
+          // abort the transaction if there's an unexpected error
+          result.catch((ex) => {
+            transaction.abort();
+            reject(ex);
+          });
         });
+      },
+
+      async get(key) {
+        return await this._transaction(async (objectStore) => {
+          return await new Promise((resolve, reject) => {
+            objectStore.get(key).onsuccess = (event) => {
+              resolve(event.target.result);
+            };
+          });
+        }, "readonly");
       },
 
       async getAll(filter) {
-        const db = await this.connect();
-        const transaction = db.transaction("cache", "readonly");
-        const objectStore = transaction.objectStore(["cache"]);
-
-        return await new Promise((resolve, reject) => {
-          const request = objectStore.getAll();
-          request.onsuccess = function (event) {
-            const items = event.target.result;
-            const result = {};
-            for (let item of items) {
-              try {
-                let obj = JSON.parse(item.key);
-                if (!filter(obj)) {
-                  throw new Error("filter not matched");
-                }
-                result[item.key] = item.value;
-              } catch (ex) {
-                // invalid JSON format => meaning not a cache
-                // or does not match the filter
+        return await this._transaction(async (objectStore) => {
+          const result = {};
+          return await new Promise((resolve, reject) => {
+            objectStore.openCursor().onsuccess = (event) => {
+              const cursor = event.target.result;
+              if (!cursor) {
+                resolve(result);
+                return;
               }
-            }
-            resolve(result);
-          };
-          request.onerror = function (event) {
-            reject(event.target.error);
-          };
-        });
+              try {
+                if (filter(JSON.parse(cursor.key))) {
+                  result[cursor.key] = cursor.value;
+                }
+              } catch (ex) {}
+              cursor.continue();
+            };
+          });
+        }, "readonly");
       },
 
       async set(key, value) {
-        const db = await this.connect();
-
-        return await new Promise((resolve, reject) => {
-          const transaction = db.transaction("cache", "readwrite");
-          const objectStore = transaction.objectStore(["cache"]);
-          const request = objectStore.put({key, value});
-          transaction.oncomplete = (event) => {
-            resolve();
-          };
-          transaction.onerror = (event) => {
-            reject(event.target.error);
-          };
-        });
+        return await this._transaction(async (objectStore) => {
+          objectStore.put(value, key);
+        }, "readwrite");
       },
 
       async remove(keys) {
-        const db = await this.connect();
+        return await this._transaction(async (objectStore) => {
+          if (typeof keys === 'function') {
+            const filter = keys;
+            return await new Promise((resolve, reject) => {
+              objectStore.openCursor().onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (!cursor) {
+                  resolve();
+                  return;
+                }
+                try {
+                  if (filter(JSON.parse(cursor.key))) {
+                    cursor.delete();
+                  }
+                } catch (ex) {}
+                cursor.continue();
+              };
+            });
+          }
 
-        const transaction = db.transaction("cache", "readwrite");
-        const objectStore = transaction.objectStore(["cache"]);
-        const tasks = keys.map((key) => {
-          return new Promise((resolve, reject) => {
-            const request = objectStore.delete(key);
-            request.onsuccess = function (event) {
-              resolve();
-            };
-            request.onerror = function (event) {
-              reject(event.target.error);
-            };
-          });
-        });
-        return await Promise.all(tasks).catch((ex) => {
-          transaction.abort();
-          throw ex;
-        });
+          for (const key of keys) {
+            objectStore.delete(key);
+          }
+        }, "readwrite");
       },
     },
 
@@ -777,7 +807,7 @@ if (Node && !Node.prototype.getRootNode) {
 
       async getAll(filter) {
         const items = [];
-        for (var i = 0, I = sessionStorage.length; i < I; i++) {
+        for (let i = 0, I = sessionStorage.length; i < I; i++) {
           const key = sessionStorage.key(i);
           try {
             let obj = JSON.parse(key);
@@ -798,6 +828,19 @@ if (Node && !Node.prototype.getRootNode) {
       },
 
       async remove(keys) {
+        if (typeof keys === 'function') {
+          const filter = keys;
+          for (let i = 0, I = sessionStorage.length; i < I; i++) {
+            const key = sessionStorage.key(i);
+            try {
+              if (filter(JSON.parse(key))) {
+                sessionStorage.removeItem(key);
+              }
+            } catch (ex) {}
+          }
+          return;
+        }
+
         for (const key of keys) {
           sessionStorage.removeItem(key);
         }
@@ -815,17 +858,17 @@ if (Node && !Node.prototype.getRootNode) {
   };
 
   scrapbook.loadLanguages = function (rootNode) {
-    Array.prototype.forEach.call(rootNode.querySelectorAll('*'), (elem) => {
+    for (const elem of rootNode.querySelectorAll('*')) {
       if (elem.childNodes.length === 1) {
         let child = elem.firstChild;
         if (child.nodeType === 3) {
           child.nodeValue = child.nodeValue.replace(/__MSG_(.*?)__/, (m, k) => scrapbook.lang(k));
         }
       }
-      Array.prototype.forEach.call(elem.attributes, (attr) => {
+      for (const attr of elem.attributes) {
         attr.nodeValue = attr.nodeValue.replace(/__MSG_(.*?)__/, (m, k) => scrapbook.lang(k));
-      }, this);
-    }, this);
+      }
+    }
   };
 
 
@@ -1071,15 +1114,212 @@ if (Node && !Node.prototype.getRootNode) {
     return dd;
   };
 
+  scrapbook.ItemInfoFormatter = class ItemInfoFormatter {
+    constructor(item, {book} = {}) {
+      this.item = item;
+      this.book = book;
+
+      this._pattern = /%([\w:-]*)%/g;
+      this._formatKey = (_, keyFormat) => {
+        const [key, ...formats] = keyFormat.split(':');
+        let rv = this.formatKey(key);
+        for (const format of formats) {
+          rv = this.formatFormat(rv, format);
+        }
+        return rv;
+      };
+      this._formatters = {};
+    }
+
+    /**
+     * @param {Object} item - A scrapbook item object.
+     * @param {string} template
+     * @param {Object} context
+     * @param {Book} [context.book] - A scrapbook Book object.
+     */
+    static format(item, template, context) {
+      const formatter = new this(item, context);
+      return formatter.format(template);
+    }
+
+    format(template) {
+      return template.replace(this._pattern, this._formatKey);
+    }
+
+    formatKey(key) {
+      const [keyMain, keySub, keySub2] = key.split('-');
+      const fn = this[`format_${keyMain.toLowerCase()}`];
+      if (typeof fn === 'function') {
+        try {
+          return fn.call(this, keySub, keySub2) || '';
+        } catch (ex) {
+          console.error(`Failed to format "${key}": ${ex.message}`, this.item);
+        }
+        return '';
+      }
+      return '';
+    }
+
+    formatFormat(text, format) {
+      if (typeof format !== 'string') {
+        return text;
+      }
+      switch (format.toLowerCase()) {
+        case "oneline": {
+          return text.replace(/[\r\n][\S\s]+$/, '');
+        }
+        case "collapse": {
+          return scrapbook.trim(text).replace(/[\t\n\f\r ]+/g, ' ');
+        }
+        case "url": {
+          return encodeURIComponent(text);
+        }
+        case "escape_html": {
+          return scrapbook.escapeHtml(text);
+        }
+        case "escape_html_space": {
+          return scrapbook.escapeHtml(text, undefined, undefined, true);
+        }
+        case "escape_css": {
+          return CSS.escape(text);
+        }
+        case "json": {
+          return JSON.stringify(text);
+        }
+      }
+      return text;
+    }
+
+    formatDate(id, key, mode) {
+      const date = scrapbook.idToDate(id);
+      if (!date) {
+        return '';
+      }
+      if (!Strftime || typeof key !== 'string') {
+        return date.toLocaleString();
+      }
+
+      const isUtc = mode && mode.toLowerCase() === 'utc';
+      const k = id + (isUtc ? '-utc' : '');
+      const formatter = this._formatters[k] = this._formatters[k] || new Strftime({date, isUtc});
+      return formatter.formatKey(key);
+    }
+
+    getItemUrl() {
+      const {item, book} = this;
+      switch (item.type) {
+        case 'folder': {
+          if (book) {
+            const u = new URL(browser.runtime.getURL("scrapbook/folder.html"));
+            u.searchParams.append('id', item.id);
+            u.searchParams.append('bookId', book.id);
+            return u.href;
+          }
+          break;
+        }
+        case 'postit': {
+          if (book && item.index) {
+            const u = new URL(browser.runtime.getURL("scrapbook/postit.html"));
+            u.searchParams.append('id', item.id);
+            u.searchParams.append('bookId', book.id);
+            return u.href;
+          }
+          break;
+        }
+        case 'bookmark': {
+          if (item.source) {
+            return new URL(item.source).href;
+          } else if (book && item.index) {
+            return new URL(book.dataUrl + scrapbook.escapeFilename(item.index)).href;
+          }
+          break;
+        }
+        default: {
+          if (book && item.index) {
+            return new URL(book.dataUrl + scrapbook.escapeFilename(item.index)).href;
+          }
+          break;
+        }
+      }
+      return '';
+    }
+
+    format_() {
+      return '%';
+    }
+
+    format_id(keySub) {
+      switch (keySub) {
+        case 'legacy': {
+          return scrapbook.dateToIdOld(scrapbook.idToDate(this.item.id));
+        }
+        default: {
+          return this.item.id;
+        }
+      }
+    }
+
+    format_index() {
+      return this.item.index;
+    }
+
+    format_comment() {
+      return this.item.comment;
+    }
+
+    format_title() {
+      return this.item.title;
+    }
+
+    format_source(keySub) {
+      switch (keySub) {
+        case "host": {
+          const u = new URL(this.item.source);
+          return u.host;
+        }
+        case "file": {
+          return scrapbook.urlToFilename(this.item.source);
+        }
+        case "page": {
+          return scrapbook.filenameParts(scrapbook.urlToFilename(this.item.source))[0];
+        }
+        default: {
+          return this.item.source;
+        }
+      }
+      return '';
+    }
+
+    format_url() {
+      return this.getItemUrl();
+    }
+
+    format_create(keySub, keySub2) {
+      return this.formatDate(this.item.create, keySub, keySub2);
+    }
+
+    format_modify(keySub, keySub2) {
+      return this.formatDate(this.item.modify, keySub, keySub2);
+    }
+
+    format_recycled(keySub, keySub2) {
+      return this.formatDate(this.item.recycled, keySub, keySub2);
+    }
+  }
+
   /**
    * @param {string} url
    * @param {boolean} [allowFileAccess] - Optional for better accuracy.
    * @return {string} Whether the page url is allowed for content scripts.
    */
-  scrapbook.isContentPage = function (url, allowFileAccess = !scrapbook.userAgent.is('gecko')) {
-    const filter = new RegExp(`^(?:https?${allowFileAccess ? "|file" : ""}):`);
-    if (!filter.test(url)) { return false; }
-    return true;
+  scrapbook.isContentPage = function (...args) {
+    const FILTER = new RegExp(`^https?:`);
+    const FILTER_FILE = new RegExp(`^(?:https?|file):`);
+    const isContentPage = (url, allowFileAccess = !scrapbook.userAgent.is('gecko')) => {
+      return (allowFileAccess ? FILTER_FILE : FILTER).test(url);
+    };
+    scrapbook.isContentPage = isContentPage;
+    return isContentPage(...args);
   };
 
 
@@ -1092,7 +1332,7 @@ if (Node && !Node.prototype.getRootNode) {
    *   linemarker (span) (since SB, SBX)
    *   inline (span) (for SB, SBX)
    *   annotation (span) (for 1.12.0a <= SBX <= 1.12.0a45)
-   *   link-url (a) (for SBX)
+   *   link-url (a) (since SBX)
    *   link-inner (a) (for SBX)
    *   link-file (a) (for SBX)
    *   freenote (div) (for 1.12.0a35 <= SBX)
@@ -1131,7 +1371,7 @@ if (Node && !Node.prototype.getRootNode) {
    *   infobar-loader (since 0.82.0 <= WSB)
    *   canvas-loader (for 0.51 <= WSB < 0.69)
    *   shadowroot-loader (for 0.51 <= WSB < 0.69)
-   *   stylesheet (link, style) (for SBX)
+   *   stylesheet (link, style) (for SB, SBX)
    *   stylesheet-temp (link, style) (for SBX)
    *
    *   custom-css (should not be altered by the capturer or editor) (since 0.70 <= WSB)
@@ -1140,26 +1380,26 @@ if (Node && !Node.prototype.getRootNode) {
    *
    * @return {false|string} Scrapbook object type of the element; or false.
    */
-  scrapbook.getScrapbookObjectType = function (elem) {
-    if (elem.nodeType === 8) {
-      const m = elem.nodeValue.match(/^scrapbook-(.*?)(?:-\d+)?=/);
+  scrapbook.getScrapbookObjectType = function (node) {
+    if (node.nodeType === 8) {
+      const m = node.nodeValue.match(/^scrapbook-(.*?)(?:-\d+)?=/);
       if (m) {
         return m[1];
       }
       return false;
     }
 
-    if (elem.nodeType !== 1) { return false; }
+    if (node.nodeType !== 1) { return false; }
 
-    let type = elem.getAttribute("data-scrapbook-elem");
+    let type = node.getAttribute("data-scrapbook-elem");
     if (type) { return type; }
 
     // for downward compatibility with legacy ScrapBook X
-    type = elem.getAttribute("data-sb-obj");
+    type = node.getAttribute("data-sb-obj");
     if (type) { return type; }
 
     // for downward compatibility with legacy ScrapBook
-    switch (elem.className) {
+    switch (node.className) {
       case "linemarker-marked-line":
         return "linemarker";
       case "scrapbook-inline":
@@ -1175,7 +1415,7 @@ if (Node && !Node.prototype.getRootNode) {
         return "block-comment";
     }
 
-    if (elem.id == "scrapbook-sticky-css") {
+    if (node.id == "scrapbook-sticky-css") {
       return "stylesheet";
     }
 
@@ -1190,32 +1430,402 @@ if (Node && !Node.prototype.getRootNode) {
    *      2: should unwrap
    *      3: should uncomment
    */
-  scrapbook.getScrapBookObjectRemoveType = function (elem) {
-    let type = scrapbook.getScrapbookObjectType(elem);
+  scrapbook.getScrapBookObjectRemoveType = function (node) {
+    let type = scrapbook.getScrapbookObjectType(node);
     if (!type) { return -1; }
-    if (["annotation", "freenote", "sticky", "block-comment", "custom"].includes(type)) { return 1; }
-    if (["linemarker", "inline", "link-url", "link-inner", "link-file", "custom-wrapper"].includes(type)) { return 2; }
-    if (["erased"].includes(type)) { return 3; }
+    if (SCRAPBOOK_OBJECT_REMOVE_TYPE_REMOVE.has(type)) { return 1; }
+    if (SCRAPBOOK_OBJECT_REMOVE_TYPE_UNWRAP.has(type)) { return 2; }
+    if (SCRAPBOOK_OBJECT_REMOVE_TYPE_UNCOMMENT.has(type)) { return 3; }
     return 0;
   };
 
   /**
-   * @return {Array<Element>} Related elements having the shared ID; or the
+   * @return {Element[]} Related elements having the shared ID; or the
    *     original element.
    */
-  scrapbook.getScrapBookObjectsById = function (elem) {
-    let id = elem.getAttribute("data-scrapbook-id");
+  scrapbook.getScrapBookObjectElems = function (node) {
+    let id = node.getAttribute("data-scrapbook-id");
     if (id) {
-      return elem.ownerDocument.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`);
+      return node.ownerDocument.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`);
     }
 
     // for downward compatibility with legacy ScrapBook (X)
-    id = elem.getAttribute("data-sb-id");
+    id = node.getAttribute("data-sb-id");
     if (id) {
-      return elem.ownerDocument.querySelectorAll(`[data-sb-id="${CSS.escape(id)}"]`);
+      return node.ownerDocument.querySelectorAll(`[data-sb-id="${CSS.escape(id)}"]`);
     }
 
-    return [elem];
+    return [node];
+  };
+
+  /**
+   * Clone a document and generate relation mapping.
+   *
+   * @param {Document} doc
+   * @param {Object} [options]
+   * @param {Map|WeakMap} [options.origNodeMap]
+   * @param {Map|WeakMap} [options.clonedNodeMap]
+   */
+  scrapbook.cloneDocument = function (doc, {
+    origNodeMap,
+    clonedNodeMap,
+  } = {}) {
+    const {contentType: mime, documentElement: docElemNode} = doc;
+    const newDoc = (new DOMParser()).parseFromString(
+      '<' + docElemNode.nodeName.toLowerCase() + '/>',
+      DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
+    );
+    while (newDoc.firstChild) {
+      newDoc.removeChild(newDoc.firstChild);
+    }
+    origNodeMap && origNodeMap.set(newDoc, doc);
+    clonedNodeMap && clonedNodeMap.set(doc, newDoc);
+    return newDoc;
+  };
+
+  /**
+   * Clone a node and generate relation mapping.
+   *
+   * @param {Node} node
+   * @param {boolean} [deep]
+   * @param {Object} [options]
+   * @param {Map|WeakMap} [options.origNodeMap]
+   * @param {Map|WeakMap} [options.clonedNodeMap]
+   * @param {boolean} [options.includeShadowDom]
+   */
+  scrapbook.cloneNode = function (...args) {
+    const cloneShadowDom = (node, newNode, options = {}) => {
+      const shadowRoot = node.shadowRoot;
+      if (!shadowRoot) { return; }
+      const {origNodeMap, clonedNodeMap} = options;
+      const newShadowRoot = newNode.attachShadow({mode: shadowRoot.mode});
+      origNodeMap && origNodeMap.set(newShadowRoot, shadowRoot);
+      clonedNodeMap && clonedNodeMap.set(shadowRoot, newShadowRoot);
+      for (const node of shadowRoot.childNodes) {
+        newShadowRoot.appendChild(scrapbook.cloneNode(node, true, options));
+      }
+    };
+
+    const cloneNode = (node, deep = false, options = {}) => {
+      const {
+        newDoc = node.ownerDocument,
+        origNodeMap,
+        clonedNodeMap,
+        includeShadowDom,
+      } = options;
+      
+      const newNode = newDoc.importNode(node, deep);
+
+      if (deep) {
+        const walker1 = node.ownerDocument.createNodeIterator(node);
+        const walker2 = newDoc.createNodeIterator(newNode);
+        let node1 = walker1.nextNode();
+        let node2 = walker2.nextNode();
+        while (node1) {
+          origNodeMap && origNodeMap.set(node2, node1);
+          clonedNodeMap && clonedNodeMap.set(node1, node2);
+          includeShadowDom && cloneShadowDom(node1, node2, options);
+          node1 = walker1.nextNode();
+          node2 = walker2.nextNode();
+        }
+      } else {
+        origNodeMap && origNodeMap.set(newNode, node);
+        clonedNodeMap && clonedNodeMap.set(node, newNode);
+        includeShadowDom && cloneShadowDom(node, newNode, options);
+      }
+
+      return newNode;
+    };
+
+    scrapbook.cloneNode = cloneNode;
+    return cloneNode(...args);
+  };
+
+  /**
+   * Convert dynamic information into representable HTML attributes for an
+   * element.
+   *
+   * @param {Object} [options]
+   * @param {Map|WeakMap} [options.mapShadowRoot] - mapping from an Element to
+   *     its (possibly closed) shadow root.
+   */
+  scrapbook.htmlifyElem = function (elem, options = {}) {
+    if (elem.nodeType !== 1) { return; }
+
+    const {
+      mapShadowRoot,
+    } = options;
+
+    switch (elem.nodeName.toLowerCase()) {
+      case "canvas": {
+        try {
+          if (!scrapbook.isCanvasBlank(elem)) {
+            elem.setAttribute('data-scrapbook-canvas', elem.toDataURL());
+          }
+        } catch (ex) {
+          console.error(ex);
+        }
+        break;
+      }
+
+      case "input": {
+        const type = elem.type;
+        if (typeof type === 'undefined') { break; }
+        switch (type.toLowerCase()) {
+          case "image":
+          case "file": {
+            break;
+          }
+          case "radio":
+          case "checkbox": {
+            const checked = elem.checked;
+            if (checked !== elem.hasAttribute('checked')) {
+              elem.setAttribute('data-scrapbook-input-checked', checked);
+            }
+
+            const indeterminate = elem.indeterminate;
+            if (indeterminate) {
+              elem.setAttribute('data-scrapbook-input-indeterminate', '');
+            }
+
+            break;
+          }
+          default: {
+            const value = elem.value;
+            if (value !== elem.getAttribute('value')) {
+              elem.setAttribute('data-scrapbook-input-value', value);
+            }
+            break;
+          }
+        }
+        break;
+      }
+
+      case "textarea": {
+        const value = elem.value;
+        if (value !== elem.textContent) {
+          elem.setAttribute('data-scrapbook-textarea-value', value);
+        }
+        break;
+      }
+
+      case "option": {
+        const selected = elem.selected;
+        if (selected !== elem.hasAttribute('selected')) {
+          elem.setAttribute('data-scrapbook-option-selected', selected);
+        }
+        break;
+      }
+    }
+
+    const shadowRoot = mapShadowRoot && mapShadowRoot.get(elem) || elem.shadowRoot;
+    if (shadowRoot) {
+      scrapbook.htmlify(shadowRoot, options);
+      elem.setAttribute('data-scrapbook-shadowroot', JSON.stringify({
+        data: shadowRoot.innerHTML,
+        mode: shadowRoot.mode,
+      }));
+    }
+  };
+
+  /**
+   * Convert dynamic information into representable HTML attributes recursively.
+   */
+  scrapbook.htmlify = function (node, options = {}) {
+    scrapbook.htmlifyElem(node, options);
+    for (const elem of node.querySelectorAll('*')) {
+      scrapbook.htmlifyElem(elem, options);
+    }
+  };
+
+  /**
+   * Reverse htmlify for an element.
+   *
+   * @param {boolean} [options.apply] - true to apply the recorded value to
+   *     the element; otherwise remove the record only.
+   * @param {boolean} [options.canvas] - true to handle canvas.
+   * @param {boolean} [options.form] - true to handle form elements.
+   * @param {boolean} [options.shadowDom] - true to handle shadowDom.
+   */
+  scrapbook.unhtmlifyElem = function (elem, options = {}) {
+    if (elem.nodeType !== 1) { return; }
+
+    const {
+      apply = true,
+      canvas = true,
+      form = true,
+      shadowDom = true,
+    } = options;
+
+    if (canvas) {
+      const canvasData = elem.getAttribute('data-scrapbook-canvas');
+      if (canvasData) {
+        if (apply) {
+          const img = new Image();
+          img.onload = () => { elem.getContext('2d').drawImage(img, 0, 0); };
+          img.src = elem.getAttribute('data-scrapbook-canvas');
+        }
+        elem.removeAttribute('data-scrapbook-canvas');
+      }
+    }
+
+    if (form) {
+      const checked = elem.getAttribute('data-scrapbook-input-checked');
+      if (checked !== null) {
+        if (apply) {
+          elem.checked = checked === 'true';
+        }
+        elem.removeAttribute('data-scrapbook-input-checked');
+      }
+    }
+
+    if (form) {
+      const indeterminate = elem.getAttribute('data-scrapbook-input-indeterminate');
+      if (indeterminate !== null) {
+        if (apply) {
+          elem.indeterminate = true;
+        }
+        elem.removeAttribute('data-scrapbook-input-indeterminate');
+      }
+    }
+
+    if (form) {
+      const value = elem.getAttribute('data-scrapbook-input-value');
+      if (value !== null) {
+        if (apply) {
+          elem.value = value;
+        }
+        elem.removeAttribute('data-scrapbook-input-value');
+      }
+    }
+
+    if (form) {
+      const value = elem.getAttribute('data-scrapbook-textarea-value');
+      if (value !== null) {
+        if (apply) {
+          elem.value = value;
+        }
+        elem.removeAttribute('data-scrapbook-textarea-value');
+      }
+    }
+
+    if (form) {
+      const selected = elem.getAttribute('data-scrapbook-option-selected');
+      if (selected !== null) {
+        if (apply) {
+          elem.selected = selected === 'true';
+        }
+        elem.removeAttribute('data-scrapbook-option-selected');
+      }
+    }
+
+    if (shadowDom) {
+      const shadowRootJson = elem.getAttribute('data-scrapbook-shadowroot');
+      if (shadowRootJson !== null) {
+        if (apply && elem.attachShadow && !elem.shadowRoot) {
+          try {
+            const {data, mode} = JSON.parse(shadowRootJson);
+            const shadowRoot = elem.attachShadow({mode});
+            shadowRoot.innerHTML = data;
+          } catch (ex) {
+            console.error(ex);
+          }
+        }
+        elem.removeAttribute('data-scrapbook-shadowroot');
+      }
+    }
+
+    const shadowRoot = elem.shadowRoot;
+    if (shadowRoot) {
+      scrapbook.unhtmlify(shadowRoot, options);
+    }
+  };
+
+  /**
+   * Reverse htmlify recursively.
+   */
+  scrapbook.unhtmlify = function (node, options = {}) {
+    scrapbook.unhtmlifyElem(node, options);
+    for (const elem of node.querySelectorAll('*')) {
+      scrapbook.unhtmlifyElem(elem, options);
+    }
+  };
+
+  /**
+   * Replace nodes in the range with a serialized HTML comment.
+   */
+  scrapbook.eraseRange = function (range, {
+    timeId = scrapbook.dateToId(),
+    mapWrapperToComment,
+    mapCommentToWrapper,
+  } = {}) {
+    const doc = range.commonAncestorContainer.ownerDocument;
+    const wrapper = doc.createElement('scrapbook-erased');
+    range.surroundContents(wrapper);
+    scrapbook.htmlify(wrapper);
+    const comment = doc.createComment(`scrapbook-erased${timeId ? '-' + timeId : ''}=${scrapbook.escapeHtmlComment(wrapper.innerHTML)}`);
+    if (mapWrapperToComment) {
+      mapWrapperToComment.set(wrapper, comment);
+    }
+    if (mapCommentToWrapper) {
+      mapCommentToWrapper.set(comment, wrapper);
+    }
+    wrapper.replaceWith(comment);
+  };
+
+  /**
+   * Replace node with a serialized HTML comment.
+   */
+  scrapbook.eraseNode = function (node, options) {
+    const range = node.ownerDocument.createRange();
+    range.selectNode(node);
+    return scrapbook.eraseRange(range, options);
+  };
+
+  /**
+   * Replace a serialized HTML comment with the original nodes.
+   *
+   * @return {boolean} whether the unerase is successful
+   */
+  scrapbook.uneraseNode = function (node, {
+    mapCommentToWrapper,
+    normalize = true,
+  } = {}) {
+    const parent = node.parentNode;
+    if (!parent) { return false; }
+
+    // if the associated source nodes exist, use them
+    let wrapper = mapCommentToWrapper.get(node);
+    if (wrapper) {
+      const frag = node.ownerDocument.createDocumentFragment();
+      let child;
+      while (child = wrapper.firstChild) {
+        frag.appendChild(child);
+      }
+      scrapbook.unhtmlify(frag, {apply: false});
+      node.replaceWith(frag);
+      if (normalize) {
+        parent.normalize();
+      }
+      return true;
+    }
+
+    // otherwise, recover from recorded HTML
+    const m = node.nodeValue.match(/^.+?=([\s\S]*)$/);
+    if (m) {
+      const doc = node.ownerDocument;
+      const t = doc.createElement('template');
+      t.innerHTML = scrapbook.unescapeHtmlComment(m[1]);
+      const frag = doc.importNode(t.content, true);
+      scrapbook.unhtmlify(frag);
+      node.replaceWith(frag);
+      if (normalize) {
+        parent.normalize();
+      }
+      return true;
+    }
+
+    return false;
   };
 
 
@@ -1262,7 +1872,15 @@ if (Node && !Node.prototype.getRootNode) {
   scrapbook.crop = function (str, charLimit, byteLimit, ellipsis = '...') {
     if (charLimit) {
       if (str.length > charLimit) {
-        str = str.substring(0, charLimit - ellipsis.length) + ellipsis;
+        str = str.substring(0, charLimit - ellipsis.length);
+        const lastCharCode = str.charCodeAt(str.length - 1);
+
+        // prevent cutting a surrogate pair
+        if (0xD800 < lastCharCode && lastCharCode < 0xDBFF) {
+          str = str.slice(0, -1);
+        }
+
+        str += ellipsis;
       }
     }
     if (byteLimit) {
@@ -1423,14 +2041,10 @@ if (Node && !Node.prototype.getRootNode) {
   };
 
   scrapbook.quoteXPath = function (str) {
-    const reTail = /,""\)$/;
-    const fn = scrapbook.quoteXPath = (str) => {
-      const parts = str.split('"');
-      return parts.length > 1 ? 
-          ('concat("' + parts.join(`",'"',"`) + '")').replace(reTail, ")") : 
-          `"${str}"`;
-    };
-    return fn(str);
+    const parts = str.split('"');
+    return parts.length > 1 ? 
+        ('concat("' + parts.join(`",'"',"`) + '")') : 
+        `"${str}"`;
   };
 
   /**
@@ -1543,6 +2157,20 @@ if (Node && !Node.prototype.getRootNode) {
   /****************************************************************************
    * String handling - URL and filename
    ***************************************************************************/
+
+  /**
+   * Trim leading and trailing ASCII whitespaces.
+   *
+   * Usually used for HTML parsing.
+   */
+  scrapbook.trim = function (str) {
+    const regexLeading = /^[\t\n\f\r ]+/;
+    const regexTrailing = /[\t\n\f\r ]+$/;
+    const trim = scrapbook.trim = (str) => {
+      return str.replace(regexLeading, '').replace(regexTrailing, '');
+    };
+    return trim(str);
+  };
 
   /**
    * Ensure normalizeUrl(url1) === normalizeUrl(url2)
@@ -1713,13 +2341,18 @@ if (Node && !Node.prototype.getRootNode) {
   /**
    * Parse Content-Type string from the HTTP Header
    *
+   * ref: https://tools.ietf.org/html/rfc7231#section-3.1.1.1
+   *
    * @return {{type: string, parameters: {[charset: string]}}}
    */
   scrapbook.parseHeaderContentType = function (string) {
-    const regexFields = /^(.*?)(?=;|$)/i;
-    const regexDoubleQuotedField = /;((?:"(?:\\.|[^"])*(?:"|$)|[^"])*?)(?=;|$)/i;
-    const regexKeyValue = /\s*(.*?)\s*=\s*("(?:\\.|[^"])*"|[^"]*?)\s*$/i;
-    const regexDoubleQuotedValue = /^"(.*?)"$/;
+    const pOWS = "[\\t ]*";
+    const pToken = "[!#$%&'*+.0-9A-Z^_`a-z|~-]+";
+    const pQuotedString = '(?:"[^"]*(?:\\.[^"]*)*")';
+
+    const regexContentType = new RegExp(`^(${pToken}/${pToken})`);
+    const regexParameter = new RegExp(`^${pOWS};${pOWS}(${pToken})=([^\t ;"]*(?:${pQuotedString}[^\t ;"]*)*)`);
+
     const fn = scrapbook.parseHeaderContentType = function (string) {
       const result = {type: undefined, parameters: {}};
 
@@ -1727,23 +2360,21 @@ if (Node && !Node.prototype.getRootNode) {
         return result;
       }
 
-      if (regexFields.test(string)) {
+      if (regexContentType.test(string)) {
         string = RegExp.rightContext;
-        result.type = RegExp.$1.trim();
-        while (regexDoubleQuotedField.test(string)) {
+        result.type = RegExp.$1;
+
+        while (regexParameter.test(string)) {
           string = RegExp.rightContext;
-          let parameter = RegExp.$1;
-          if (regexKeyValue.test(parameter)) {
-            let field = RegExp.$1;
-            let value = RegExp.$2;
+          let field = RegExp.$1;
+          let value = RegExp.$2;
 
-            // manage double quoted value
-            if (regexDoubleQuotedValue.test(value)) {
-              value = scrapbook.unescapeQuotes(RegExp.$1);
-            }
-
-            result.parameters[field] = value;
+          if (value.startsWith('"')) {
+            // any valid value with leading '"' must be ".*"
+            value = value.slice(1, -1);
           }
+
+          result.parameters[field] = value;
         }
       }
 
@@ -1756,17 +2387,20 @@ if (Node && !Node.prototype.getRootNode) {
    * Parse Content-Disposition string from the HTTP Header
    *
    * ref: https://github.com/jshttp/content-disposition/blob/master/index.js
+   *      https://tools.ietf.org/html/rfc5987#section-3.2
    *
    * @param {string} string - The string to parse, not including "Content-Disposition: "
    * @return {{type: ('inline'|'attachment'), parameters: {[filename: string]}}}
    */
   scrapbook.parseHeaderContentDisposition = function (string) {
-    const regexFields = /^(.*?)(?=;|$)/i;
-    const regexDoubleQuotedField = /;((?:"(?:\\.|[^"])*(?:"|$)|[^"])*?)(?=;|$)/i;
-    const regexKeyValue = /\s*(.*?)\s*=\s*("(?:\\.|[^"])*"|[^"]*?)\s*$/i;
-    const regexDoubleQuotedValue = /^"(.*?)"$/;
-    const regexExtField = /^(.*)\*$/;
-    const regexExtValue = /^(.*?)'(.*?)'(.*?)$/;
+    const pOWS = "[\\t ]*";
+    const pToken = "[!#$%&'*+.0-9A-Z^_`a-z|~-]+";
+    const pQuotedString = '(?:"[^"]*(?:\\.[^"]*)*")';
+
+    const regexContentDisposition = new RegExp(`^(${pToken})`);
+    const regexDispExtParam = new RegExp(`^${pOWS};${pOWS}(?:(${pToken})${pOWS}=${pOWS}([^\\t ;"]*(?:${pQuotedString}[^\\t ;"]*)*))`);
+    const regexExtValue = /^([^']*)'([^']*)'([^']*)$/;
+
     const fn = scrapbook.parseHeaderContentDisposition = function (string) {
       const result = {type: undefined, parameters: {}};
 
@@ -1774,41 +2408,46 @@ if (Node && !Node.prototype.getRootNode) {
         return result;
       }
 
-      if (regexFields.test(string)) {
+      if (regexContentDisposition.test(string)) {
         string = RegExp.rightContext;
-        result.type = RegExp.$1.trim();
-        while (regexDoubleQuotedField.test(string)) {
+        result.type = RegExp.$1;
+
+        while (regexDispExtParam.test(string)) {
           string = RegExp.rightContext;
-          let parameter = RegExp.$1;
-          if (regexKeyValue.test(parameter)) {
-            let field = RegExp.$1;
-            let value = RegExp.$2;
+          let field = RegExp.$1;
+          let value = RegExp.$2;
 
-            // manage double quoted value
-            if (regexDoubleQuotedValue.test(value)) {
-              value = scrapbook.unescapeQuotes(RegExp.$1);
-            }
-
-            if (regexExtField.test(field)) {
-              // the field uses an ext-value
-              field = RegExp.$1;
+          try {
+            if (field.endsWith('*')) {
+              // ext-value
+              field = field.slice(0, -1);
               if (regexExtValue.test(value)) {
-                let charset = RegExp.$1.toLowerCase(), lang = RegExp.$2.toLowerCase(), valueEncoded = RegExp.$3;
-                switch (charset) {
+                let charset = RegExp.$1, lang = RegExp.$2, valueEncoded = RegExp.$3;
+                switch (charset.toLowerCase()) {
                   case 'iso-8859-1':
-                    value = decodeURIComponent(valueEncoded).replace(/[^\x20-\x7e\xa0-\xff]/g, "?");
+                    value = unescape(valueEncoded);
                     break;
                   case 'utf-8':
                     value = decodeURIComponent(valueEncoded);
                     break;
                   default:
-                    console.error('Unsupported charset in the extended field of header content-disposition: ' + charset);
+                    console.error(`Unsupported charset in the extended field of header content-disposition: {charset}`);
                     break;
                 }
+              } else {
+                throw new Error(`Bad ext-value`);
+              }
+            } else {
+              if (value.startsWith('"')) {
+                // any valid value with leading '"' must be ".*"
+                value = value.slice(1, -1);
               }
             }
 
             result.parameters[field] = value;
+          } catch (ex) {
+            // skip and log possible error of decodeURIComponent
+            console.error(ex);
           }
         }
       }
@@ -1821,14 +2460,26 @@ if (Node && !Node.prototype.getRootNode) {
   /**
    * Parse Refresh string from the HTTP Header
    *
-   * ref: https://www.w3.org/TR/html5/document-metadata.html
+   * ref: https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
    *
    * @return {{time: integer, url: string}}
    */
   scrapbook.parseHeaderRefresh = function (string) {
-    const regexFields = /^\s*(.*?)(?=[;,]|$)/i;
-    const regexFieldValue = /^[;,]\s*url\s*=\s*((["'])?.*)$/i;
-    const regexEscape = /[\t\n\r]+/g;
+    const regex = new RegExp([
+    '^',
+    '[\\t\\n\\f\\r ]*',
+    '(\\d+)',
+    '(?:\\.[\\d.]*)?',
+    '(?:',
+        '(?=[\\t\\n\\f\\r ;,])',
+        '[\\t\\n\\f\\r ]*',
+        '[;,]?',
+        '[\\t\\n\\f\\r ]*',
+        '(?:url[\\t\\n\\f\\r ]*=[\\t\\n\\f\\r ]*)?',
+        '(.*)',
+    ')?',
+    '$',
+    ].join(''), 'i');
     const fn = scrapbook.parseHeaderRefresh = function (string) {
       const result = {time: undefined, url: undefined};
 
@@ -1836,18 +2487,22 @@ if (Node && !Node.prototype.getRootNode) {
         return result;
       }
 
-      if (regexFields.test(string)) {
-        result.time = parseInt(RegExp.$1);
-        string = RegExp.rightContext;
-        if (regexFieldValue.test(string)) {
-          let url = RegExp.$1;
-          let quote = RegExp.$2;
-          if (quote) {
-            let pos = url.indexOf(quote, 1);
-            if (pos !== -1) { url = url.slice(1, pos); }
+      const m = string.match(regex);
+      if (m) {
+        result.time = parseInt(m[1]);
+
+        let url = m[2];
+        if (url) {
+          for (const quote of ['"', "'"]) {
+            if (url.startsWith(quote)) {
+              const pos = url.indexOf(quote, 1);
+              url = url.slice(1, pos !== -1 ? pos : undefined);
+              break;
+            }
           }
-          url = url.trim().replace(regexEscape, "");
-          result.url = url;
+          result.url = scrapbook.trim(url);
+        } else {
+          result.url = '';
         }
       }
 
@@ -1959,11 +2614,11 @@ if (Node && !Node.prototype.getRootNode) {
         const parts = mediatype.split(";");
         const mime = parts.shift();
         const parameters = {};
-        parts.forEach((part) => {
+        for (const part of parts) {
           if (regexFieldValue.test(part)) {
             parameters[RegExp.$1.toLowerCase()] = RegExp.$2;
           }
-        });
+        }
 
         const bstr = base64 ? atob(data) : unescape(data);
         const ab = scrapbook.byteStringToArrayBuffer(bstr);
@@ -2012,13 +2667,42 @@ if (Node && !Node.prototype.getRootNode) {
    * HTML DOM related utilities
    ***************************************************************************/
 
-  scrapbook.doctypeToString = function (doctype) {
-    if (!doctype) { return ""; }
-    let ret = "<!DOCTYPE " + doctype.name;
-    if (doctype.publicId) { ret += ' PUBLIC "' + doctype.publicId + '"'; }
-    if (doctype.systemId) { ret += ' "'        + doctype.systemId + '"'; }
-    ret += ">\n";
-    return ret;
+  scrapbook.documentToString = function (doc, pretty = false) {
+    if (!doc) { return ""; }
+    let afterHtml = false;
+    return Array.prototype.reduce.call(doc.childNodes, (str, node) => {
+      switch (node.nodeType) {
+        // element
+        case 1: {
+          str += node.outerHTML;
+          afterHtml = true;
+          break;
+        }
+        // comment
+        case 8: {
+          str += `<!--${node.nodeValue}-->`;
+          break;
+        }
+        // doctype
+        case 10: {
+          str += '<!DOCTYPE ' + node.name +
+            (node.publicId ? ' PUBLIC "' + node.publicId + '"' : '') +
+            (node.systemId ? ' "' + node.systemId + '"' : '') +
+            '>';
+          break;
+        }
+      }
+
+      // Add a linefeed for pretty output.
+      // Don't do this for a node after <html> as it will be intepreted as
+      // inside <body>.
+      // ref: https://html.spec.whatwg.org/
+      if (pretty && !afterHtml) {
+        str += '\n';
+      }
+
+      return str;
+    }, '');
   };
 
   /**
@@ -2037,7 +2721,7 @@ if (Node && !Node.prototype.getRootNode) {
    *
    * @param {Blob} data - The CSS file blob.
    * @param {string} [charset] - Charset of the CSS file blob.
-   * @return {{text: string, charset: string|null}}
+   * @return {{text: string, charset: ?string}}
    */
   scrapbook.parseCssFile = async function (data, charset) {
     const regexAtCharset = /^@charset "([^"]*)";/;
@@ -2139,7 +2823,7 @@ if (Node && !Node.prototype.getRootNode) {
    */
   scrapbook.rewriteCssText = function (cssText, options) {
     const pCm = `(?:/\\*[\\s\\S]*?(?:\\*/|$))`; // comment
-    const pSp = `(?:[ \\t\\r\\n\\v\\f]*)`; // space equivalents
+    const pSp = `(?:[\\t\\n\\f\\r ]*)`; // ASCII whitespaces
     const pCmSp = `(?:(?:${pCm}|${pSp})*)`; // comment or space
     const pCmSp2 = `(?:(?:${pCm}|${pSp})+)`; // comment or space, at least one
     const pChar = `(?:\\\\.|[^\\\\"'])`; // a non-quote char or an escaped char sequence
@@ -2423,18 +3107,18 @@ if (Node && !Node.prototype.getRootNode) {
    *
    * @param {Document} doc
    * @param {string} [refUrl] - An arbitarary reference URL. Use document.URL if not set.
-   * @param {boolean} [ignoreDelayedRefresh] - Only consider meta refresh with 0 refresh time.
+   * @param {boolean} [includeDelayedRefresh] - Also consider meta refresh with non-0 refresh time.
    * @param {boolean} [includeNoscript] - Also consider meta refresh in <noscript>.
    * @return {string|undefined} Absolute URL of the meta refresh target.
    */
   scrapbook.getMetaRefreshTarget = function (doc, refUrl = doc.URL,
-      ignoreDelayedRefresh = false, includeNoscript = false) {
+      includeDelayedRefresh = false, includeNoscript = false) {
     let lastMetaRefreshTime = Infinity;
     let lastMetaRefreshUrl;
     for (const elem of doc.querySelectorAll('meta[http-equiv="refresh"][content]')) {
       const metaRefresh = scrapbook.parseHeaderRefresh(elem.getAttribute("content"));
-      if (metaRefresh.url && metaRefresh.url !== refUrl) {
-        if (!ignoreDelayedRefresh || metaRefresh.time === 0) {
+      if (typeof metaRefresh.time !== 'undefined') {
+        if (includeDelayedRefresh || metaRefresh.time === 0) {
           if (includeNoscript || !elem.closest('noscript')) {
             if (metaRefresh.time <= lastMetaRefreshTime) {
               lastMetaRefreshTime = metaRefresh.time;
@@ -2444,7 +3128,7 @@ if (Node && !Node.prototype.getRootNode) {
         }
       }
     }
-    if (lastMetaRefreshUrl) {
+    if (typeof lastMetaRefreshUrl !== 'undefined') {
       return new URL(lastMetaRefreshUrl, refUrl).href;
     }
   };
@@ -2458,7 +3142,7 @@ if (Node && !Node.prototype.getRootNode) {
    * @param {integer} [params.whatToShow] - Filter for allowed node types.
    * @param {Function} [params.nodeFilter] - A function to filter allowed nodes.
    * @param {boolean} [params.fuzzy] - Include partially selected nodes.
-   * @return {Array<Element>} Elements in the selected range(s).
+   * @return {Node[]} Nodes in the selected range(s).
    */
   scrapbook.getSelectedNodes = function ({win = window, range, whatToShow = -1, nodeFilter, fuzzy = false}) {
     const doc = win.document;
@@ -2611,16 +3295,20 @@ if (Node && !Node.prototype.getRootNode) {
   };
 
   /**
-   * Remove the element while keeping all children.
+   * Remove the node while keeping all children.
    */
-  scrapbook.unwrapElement = function (elem) {
-    const parent = elem.parentNode;
+  scrapbook.unwrapNode = function (node, normalize = true) {
+    const parent = node.parentNode;
     if (!parent) { return; }
-    const frag = elem.ownerDocument.createDocumentFragment();
+    const frag = node.ownerDocument.createDocumentFragment();
     let child;
-    while (child = elem.firstChild) { frag.appendChild(child); }
-    parent.replaceChild(frag, elem);
-    parent.normalize();
+    while (child = node.firstChild) {
+      frag.appendChild(child);
+    }
+    node.replaceWith(frag);
+    if (normalize) {
+      parent.normalize();
+    }
   };
 
   /**
@@ -2631,7 +3319,7 @@ if (Node && !Node.prototype.getRootNode) {
     const pixelBuffer = new Uint32Array(
       context.getImageData(0, 0, canvas.width, canvas.height).data.buffer
     );
-    return !pixelBuffer.some(color => color !== 0);
+    return pixelBuffer.every(color => color === 0);
   };
 
 
@@ -2710,15 +3398,21 @@ if (Node && !Node.prototype.getRootNode) {
 
   /**
    * Check for whether a server backend is set
+   *
+   * @param {Object} [options]
+   * @return {boolean|Promise<boolean>}
    */
-  scrapbook.hasServer = function () {
-    const url = scrapbook.getOption("server.url");
-    try {
-      const urlObj = new URL(url);
-      return ['http:', 'https:'].includes(urlObj.protocol);
-    } catch (ex) {
-      return false;
-    }
+  scrapbook.hasServer = function (...args) {
+    const reHttp = /^https?:/;
+    const fn = scrapbook.hasServer = (options = scrapbook.options) => {
+      if (options) {
+        return reHttp.test(options["server.url"]);
+      }
+      return scrapbook.getOption("server.url").then((option) => {
+        return reHttp.test(option);
+      });
+    };
+    return fn(...args);
   };
 
 

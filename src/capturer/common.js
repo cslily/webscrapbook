@@ -23,9 +23,11 @@
 
   'use strict';
 
-  const DOMPARSER_SUPPORT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/xml', 'application/xml', 'image/svg+xml']);
-
   const REWRITABLE_SPECIAL_OBJECTS = new Set([false, 'adoptedStyleSheet']);
+
+  const REMOVE_HIDDEN_EXCLUDE_HTML = new Set(["html", "head", "title", "meta", "link", "style", "script", "body", "noscript", "template", "source", "track"]);
+  const REMOVE_HIDDEN_EXCLUDE_SVG = new Set(["svg"]);
+  const REMOVE_HIDDEN_EXCLUDE_MATH = new Set(["math"]);
 
   const capturer = {
     isContentScript: true,
@@ -162,7 +164,7 @@
       return capturer.invoke("downloadFile", params)
         .then(response => {
           return Object.assign({}, response, {
-            url: response.url + (response.url.startsWith('data:') ? '' : scrapbook.splitUrlByAnchor(url)[1]),
+            url: capturer.getRedirectedUrl(response.url, scrapbook.splitUrlByAnchor(url)[1]),
           });
         })
         .catch((ex) => {
@@ -177,26 +179,12 @@
     // e.g. cloned iframes has no content, cloned canvas has no image,
     // and cloned form elements has no current status.
     const cloneNodeMapping = (node, deep = false) => {
-      const newNode = newDoc.importNode(node, deep);
-      origNodeMap.set(newNode, node);
-      clonedNodeMap.set(node, newNode);
-
-      // map descendants
-      if (deep) {
-        const doc = node.ownerDocument;
-        const walker1 = doc.createNodeIterator(node);
-        const walker2 = newDoc.createNodeIterator(newNode);
-        let node1 = walker1.nextNode();
-        let node2 = walker2.nextNode();
-        while (node1) {
-          origNodeMap.set(node2, node1);
-          clonedNodeMap.set(node1, node2);
-          node1 = walker1.nextNode();
-          node2 = walker2.nextNode();
-        }
-      }
-
-      return newNode;
+      return scrapbook.cloneNode(node, deep, {
+        newDoc,
+        origNodeMap,
+        clonedNodeMap,
+        includeShadowDom: options["capture.shadowDom"] === "save",
+      });
     };
 
     const captureRecordAddedNode = (elem, record = options["capture.recordRewrites"]) => {
@@ -409,8 +397,8 @@
     const rewriteRecursively = (elem, rootName, callback) => {
       const nodeName = elem.nodeName.toLowerCase();
 
-      // switch rootName for certain embedded "document"
-      if (["svg", "math"].includes(nodeName)) {
+      // switch rootName for a foreign element
+      if (!rootName && ["svg", "math"].includes(nodeName)) {
         rootName = nodeName;
       }
 
@@ -432,17 +420,18 @@
       return result;
     };
 
-    const rewriteNode = (elem, rootName) => {
+    const rewriteNode = (node, rootName) => {
       // skip non-element nodes
-      if (elem.nodeType !== 1) {
-        return elem;
+      if (node.nodeType !== 1) {
+        return node;
       }
 
-      // skip a special elements and its descendants
-      if (!REWRITABLE_SPECIAL_OBJECTS.has(scrapbook.getScrapbookObjectType(elem))) {
-        return elem;
+      // skip processing a special node
+      if (!REWRITABLE_SPECIAL_OBJECTS.has(scrapbook.getScrapbookObjectType(node))) {
+        return node;
       }
 
+      const elem = node;
       const elemOrig = origNodeMap.get(elem);
 
       // remove hidden elements
@@ -450,10 +439,10 @@
         switch (options["capture.removeHidden"]) {
           case "undisplayed": {
             const excludeNodes =
-                rootName === "svg" ? ["svg"] : 
-                rootName === "math" ? ["math"] : 
-                ["html", "head", "title", "meta", "link", "style", "script", "body", "noscript", "template", "source", "track"];
-            if (!excludeNodes.includes(elem.nodeName.toLowerCase())) {
+                rootName === "svg" ? REMOVE_HIDDEN_EXCLUDE_SVG : 
+                rootName === "math" ? REMOVE_HIDDEN_EXCLUDE_MATH : 
+                REMOVE_HIDDEN_EXCLUDE_HTML;
+            if (!excludeNodes.has(elem.nodeName.toLowerCase())) {
               const styles = doc.defaultView.getComputedStyle(elemOrig, null);
               if (styles.getPropertyValue("display") === "none") {
                 captureRemoveNode(elem);
@@ -606,12 +595,18 @@
                 if (metaRefresh.url) {
                   // meta refresh is relative to document URL rather than base URL
                   const url = rewriteLocalLink(metaRefresh.url, docUrl);
-                  captureRewriteAttr(elem, "content", metaRefresh.time + (url ? ";url=" + url : ""));
+                  captureRewriteAttr(elem, "content", metaRefresh.time + (url ? "; url=" + url : ""));
                 }
               } else if (elem.getAttribute("http-equiv").toLowerCase() == "content-security-policy") {
                 // content security policy could make resources not loaded when viewed offline
-                if (options["capture.removeIntegrity"]) {
-                  captureRewriteAttr(elem, "http-equiv", null);
+                switch (options["capture.contentSecurityPolicy"]) {
+                  case "save":
+                    // do nothing
+                    break;
+                  case "remove":
+                  default:
+                    captureRemoveNode(elem);
+                    return;
                 }
               }
             } else if (elem.hasAttribute("charset")) {
@@ -625,9 +620,20 @@
           }
 
           case "link": {
-            if (!elem.hasAttribute("href")) { break; }
-            const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("href"), refUrl);
-            captureRewriteAttr(elem, "href", rewriteUrl);
+            if (elem.hasAttribute("href")) {
+              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("href"), refUrl);
+              captureRewriteAttr(elem, "href", rewriteUrl);
+            }
+
+            if (elem.hasAttribute("imagesrcset")) {
+              const rewriteSrcset = scrapbook.rewriteSrcset(elem.getAttribute("imagesrcset"), (url) => {
+                return capturer.resolveRelativeUrl(url, refUrl);
+              });
+              captureRewriteAttr(elem, "imagesrcset", rewriteSrcset);
+            }
+
+            // integrity won't work due to rewriting or crossorigin issue
+            captureRewriteAttr(elem, "integrity", null);
 
             if (elem.matches('[rel~="stylesheet"]')) {
               // styles: link element
@@ -697,6 +703,9 @@
                       },
                     });
                   });
+
+                  // remove crossorigin as the origin has changed
+                  captureRewriteAttr(elem, "crossorigin", null);
                   break;
               }
               break;
@@ -705,7 +714,7 @@
               switch (options["capture.favicon"]) {
                 case "link":
                   if (typeof favIconUrl === 'undefined') {
-                    favIconUrl = rewriteUrl;
+                    favIconUrl = elem.getAttribute("href");
                   }
                   break;
                 case "blank":
@@ -726,7 +735,7 @@
                 default:
                   let useFavIcon = false;
                   if (typeof favIconUrl === 'undefined') {
-                    favIconUrl = rewriteUrl;
+                    favIconUrl = elem.getAttribute("href");
                     useFavIcon = true;
                   }
                   tasks.push(async () => {
@@ -744,11 +753,38 @@
                     }
                     return response;
                   });
+
+                  // remove crossorigin as the origin has changed
+                  captureRewriteAttr(elem, "crossorigin", null);
                   break;
               }
-            } else if (elem.matches('[rel~="preload"]')) {
+            } else if (elem.matches('[rel~="preload"], [rel~="modulepreload"], [rel~="dns-prefetch"], [rel~="preconnect"]')) {
               // @TODO: handle preloads according to its "as" attribute
-              captureRewriteAttr(elem, "href", null);
+              switch (options["capture.preload"]) {
+                case "blank":
+                  // HTML 5.1 2nd Edition / W3C Recommendation:
+                  // If the href attribute is absent, then the element does not define a link.
+                  captureRewriteAttr(elem, "href", null);
+                  captureRewriteAttr(elem, "imagesrcset", null);
+                  break;
+                case "remove":
+                default:
+                  captureRemoveNode(elem);
+                  return;
+              }
+            } else if (elem.matches('[rel~="prefetch"], [rel~="prerender"]')) {
+              // @TODO: handle prefetches according to its "as" attribute
+              switch (options["capture.prefetch"]) {
+                case "blank":
+                  // HTML 5.1 2nd Edition / W3C Recommendation:
+                  // If the href attribute is absent, then the element does not define a link.
+                  captureRewriteAttr(elem, "href", null);
+                  break;
+                case "remove":
+                default:
+                  captureRemoveNode(elem);
+                  return;
+              }
             }
             break;
           }
@@ -810,6 +846,9 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
+            // integrity won't work due to rewriting or crossorigin issue
+            captureRewriteAttr(elem, "integrity", null);
+
             switch (options["capture.script"]) {
               case "link":
                 // do nothing
@@ -841,6 +880,9 @@
                     return response;
                   });
                 }
+
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
 
@@ -861,12 +903,11 @@
               case "save":
               default:
                 if (capturer.isNoscriptEscaped) {
-                  let key = scrapbook.getUuid();
-                  specialContentMap.set(key, "noscript");
-                  const replaceElem = document.createElement(`jc-${key}`);
-                  replaceElem.innerHTML = elem.textContent;
-                  elem.parentNode.replaceChild(replaceElem, elem);
-                  rewriteRecursively(replaceElem, rootName, rewriteNode);
+                  const newElem = newDoc.createElement('scrapbook-noscript');
+                  escapedNoscriptList.push(newElem);
+                  newElem.innerHTML = elem.textContent;
+                  elem.replaceWith(newElem);
+                  rewriteRecursively(newElem, rootName, rewriteNode);
                   return;
                 }
                 break;
@@ -1011,7 +1052,7 @@
                       options["capture.saveDataUriAsSrcdoc"]) {
                     const file = scrapbook.dataUriToFile(response.url);
                     const {type: mime, parameters: {charset}} = scrapbook.parseHeaderContentType(file.type);
-                    if (["text/html", "application/xhtml+xml", "image/svg+xml"].includes(mime)) {
+                    if (mime === "text/html") {
                       // assume the charset is UTF-8 if not defined
                       const content = await scrapbook.readFileAsText(file, charset || "UTF-8");
                       captureRewriteAttr(frame, "srcdoc", content);
@@ -1242,6 +1283,9 @@
                     return response;
                   });
                 }
+
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1249,49 +1293,49 @@
 
           // images: picture
           case "picture": {
-            Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-              const rewriteSrcset = scrapbook.rewriteSrcset(elem.getAttribute("srcset"), (url) => {
+            for (const subElem of elem.querySelectorAll('source[srcset]')) {
+              const rewriteSrcset = scrapbook.rewriteSrcset(subElem.getAttribute("srcset"), (url) => {
                 return capturer.resolveRelativeUrl(url, refUrl);
               });
-              captureRewriteAttr(elem, "srcset", rewriteSrcset);
-            }, this);
+              captureRewriteAttr(subElem, "srcset", rewriteSrcset);
+            }
 
             switch (options["capture.image"]) {
               case "link":
                 // do nothing
                 break;
               case "blank":
-                Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-                  captureRewriteAttr(elem, "srcset", null);
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[srcset]')) {
+                  captureRewriteAttr(subElem, "srcset", null);
+                }
                 break;
               case "remove":
                 captureRemoveNode(elem);
                 return;
               case "save-current":
                 if (!isHeadless) {
-                  Array.prototype.forEach.call(elem.querySelectorAll('img'), (elem) => {
-                    const elemOrig = origNodeMap.get(elem);
+                  for (const subElem of elem.querySelectorAll('img')) {
+                    const subElemOrig = origNodeMap.get(subElem);
 
-                    if (elemOrig && elemOrig.currentSrc) {
-                      // elem will be further processed in the following loop that handles "img"
-                      captureRewriteAttr(elem, "src", elemOrig.currentSrc);
-                      captureRewriteAttr(elem, "srcset", null);
+                    if (subElemOrig && subElemOrig.currentSrc) {
+                      // subElem will be further processed in the following loop that handles "img"
+                      captureRewriteAttr(subElem, "src", subElemOrig.currentSrc);
+                      captureRewriteAttr(subElem, "srcset", null);
                     }
-                  }, this);
+                  }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
-                    captureRemoveNode(elem);
-                  }, this);
+                  for (const subElem of elem.querySelectorAll('source[srcset]')) {
+                    captureRemoveNode(subElem);
+                  }
 
                   break;
                 }
                 // Headless capture doesn't support currentSrc, fallback to "save".
               case "save":
               default:
-                Array.prototype.forEach.call(elem.querySelectorAll('source[srcset]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[srcset]')) {
                   tasks.push(async () => {
-                    const response = await scrapbook.rewriteSrcset(elem.getAttribute("srcset"), async (url) => {
+                    const response = await scrapbook.rewriteSrcset(subElem.getAttribute("srcset"), async (url) => {
                       const rewriteUrl = capturer.resolveRelativeUrl(url, refUrl);
                       return (await downloadFile({
                         url: rewriteUrl,
@@ -1300,10 +1344,10 @@
                         options,
                       })).url;
                     });
-                    captureRewriteAttr(elem, "srcset", response);
+                    captureRewriteAttr(subElem, "srcset", response);
                     return response;
                   });
-                }, this);
+                }
                 break;
             }
             break;
@@ -1316,10 +1360,10 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
-            Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("src"), refUrl);
-              captureRewriteAttr(elem, "src", rewriteUrl);
-            }, this);
+            for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+              const rewriteUrl = capturer.resolveRelativeUrl(subElem.getAttribute("src"), refUrl);
+              captureRewriteAttr(subElem, "src", rewriteUrl);
+            }
 
             switch (options["capture.audio"]) {
               case "link":
@@ -1332,9 +1376,9 @@
 
                 // HTML 5.1 2nd Edition / W3C Recommendation:
                 // The src attribute must be present and be a valid non-empty URL.
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-                  captureRewriteAttr(elem, "src", "about:blank");
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+                  captureRewriteAttr(subElem, "src", "about:blank");
+                }
 
                 break;
               case "remove":
@@ -1344,9 +1388,9 @@
                 if (!isHeadless) {
                   if (elemOrig && elemOrig.currentSrc) {
                     const url = elemOrig.currentSrc;
-                    Array.prototype.forEach.call(elem.querySelectorAll('source[src]'), (elem) => {
-                      captureRemoveNode(elem);
-                    }, this);
+                    for (const subElem of elem.querySelectorAll('source[src]')) {
+                      captureRemoveNode(subElem);
+                    }
                     tasks.push(async () => {
                       const response = await downloadFile({
                         url,
@@ -1359,18 +1403,18 @@
                     });
                   }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('track[src]'), (elem) => {
+                  for (const subElem of elem.querySelectorAll('track[src]')) {
                     tasks.push(async () => {
                       const response = await downloadFile({
-                        url: elem.getAttribute("src"),
+                        url: subElem.getAttribute("src"),
                         refUrl,
                         settings,
                         options,
                       });
-                      captureRewriteAttr(elem, "src", response.url);
+                      captureRewriteAttr(subElem, "src", response.url);
                       return response;
                     });
-                  }, this);
+                  }
 
                   break;
                 }
@@ -1390,19 +1434,21 @@
                   });
                 }
 
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
                   tasks.push(async () => {
                     const response = await downloadFile({
-                      url: elem.getAttribute("src"),
+                      url: subElem.getAttribute("src"),
                       refUrl,
                       settings,
                       options,
                     });
-                    captureRewriteAttr(elem, "src", response.url);
+                    captureRewriteAttr(subElem, "src", response.url);
                     return response;
                   });
-                }, this);
+                }
 
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1420,10 +1466,10 @@
               captureRewriteAttr(elem, "src", rewriteUrl);
             }
 
-            Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-              const rewriteUrl = capturer.resolveRelativeUrl(elem.getAttribute("src"), refUrl);
-              captureRewriteAttr(elem, "src", rewriteUrl);
-            }, this);
+            for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+              const rewriteUrl = capturer.resolveRelativeUrl(subElem.getAttribute("src"), refUrl);
+              captureRewriteAttr(subElem, "src", rewriteUrl);
+            }
 
             switch (options["capture.video"]) {
               case "link":
@@ -1442,9 +1488,9 @@
 
                 // HTML 5.1 2nd Edition / W3C Recommendation:
                 // The src attribute must be present and be a valid non-empty URL.
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
-                  captureRewriteAttr(elem, "src", "about:blank");
-                }, this);
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
+                  captureRewriteAttr(subElem, "src", "about:blank");
+                }
 
                 break;
               case "remove":
@@ -1467,9 +1513,9 @@
 
                   if (elemOrig && elemOrig.currentSrc) {
                     const url = elemOrig.currentSrc;
-                    Array.prototype.forEach.call(elem.querySelectorAll('source[src]'), (elem) => {
-                      captureRemoveNode(elem);
-                    }, this);
+                    for (const subElem of elem.querySelectorAll('source[src]')) {
+                      captureRemoveNode(subElem);
+                    }
                     tasks.push(async () => {
                       const response = await downloadFile({
                         url,
@@ -1482,18 +1528,18 @@
                     });
                   }
 
-                  Array.prototype.forEach.call(elem.querySelectorAll('track[src]'), (elem) => {
+                  for (const subElem of elem.querySelectorAll('track[src]')) {
                     tasks.push(async () => {
                       const response = await downloadFile({
-                        url: elem.getAttribute("src"),
+                        url: subElem.getAttribute("src"),
                         refUrl,
                         settings,
                         options,
                       });
-                      captureRewriteAttr(elem, "src", response.url);
+                      captureRewriteAttr(subElem, "src", response.url);
                       return response;
                     });
-                  }, this);
+                  }
 
                   break;
                 }
@@ -1526,19 +1572,21 @@
                   });
                 }
 
-                Array.prototype.forEach.call(elem.querySelectorAll('source[src], track[src]'), (elem) => {
+                for (const subElem of elem.querySelectorAll('source[src], track[src]')) {
                   tasks.push(async () => {
                     const response = await downloadFile({
-                      url: elem.getAttribute("src"),
+                      url: subElem.getAttribute("src"),
                       refUrl,
                       settings,
                       options,
                     });
-                    captureRewriteAttr(elem, "src", response.url);
+                    captureRewriteAttr(subElem, "src", response.url);
                     return response;
                   });
-                }, this);
+                }
 
+                // remove crossorigin as the origin has changed
+                captureRewriteAttr(elem, "crossorigin", null);
                 break;
             }
             break;
@@ -1609,14 +1657,61 @@
               default:
                 if (elem.hasAttribute("data")) {
                   tasks.push(async () => {
-                    const response = await downloadFile({
-                      url: elem.getAttribute("data"),
-                      refUrl,
-                      settings,
-                      options,
+                    const sourceUrl = elem.getAttribute("data");
+
+                    // skip further processing and keep current src
+                    // (point to self, or not resolvable)
+                    if (!scrapbook.isUrlAbsolute(sourceUrl)) {
+                      return;
+                    }
+
+                    const [sourceUrlMain, sourceUrlHash] = scrapbook.splitUrlByAnchor(sourceUrl);
+
+                    // headlessly capture
+                    const objectSettings = Object.assign({}, settings, {
+                      recurseChain: [...settings.recurseChain, refUrl],
+                      isMainFrame: false,
+                      fullPage: true,
+                      usedCssFontUrl: undefined,
+                      usedCssImageUrl: undefined,
+                      isHeadless: true,
                     });
-                    captureRewriteAttr(elem, "data", response.url);
-                    return response;
+
+                    let objectOptions = options;
+
+                    // special handling for data URL
+                    if (sourceUrl.startsWith("data:") &&
+                        !options["capture.saveDataUriAsFile"] &&
+                        options["capture.saveAs"] !== "singleHtml") {
+                      // Save object document and inner URLs as data URL since data URL
+                      // is null origin and no relative URL is allowed in it.
+                      objectOptions = Object.assign({}, options, {
+                        "capture.saveAs": "singleHtml",
+                      });
+                    }
+
+                    // check circular reference if saving as data URL
+                    if (objectOptions["capture.saveAs"] === "singleHtml") {
+                      if (objectSettings.recurseChain.includes(sourceUrlMain)) {
+                        console.warn(scrapbook.lang("WarnCaptureCircular", [refUrl, sourceUrlMain]));
+                        captureRewriteAttr(elem, "data", `urn:scrapbook:download:circular:url:${sourceUrl}`);
+                        return;
+                      }
+                    }
+
+                    return capturer.invoke("captureUrl", {
+                      url: sourceUrl,
+                      refUrl,
+                      settings: objectSettings,
+                      options: objectOptions,
+                    }).catch(async (ex) => {
+                      console.error(ex);
+                      warn(scrapbook.lang("ErrorFileDownloadError", [sourceUrl, ex.message]));
+                      return {url: capturer.getErrorUrl(sourceUrl, options), error: {message: ex.message}};
+                    }).then(async (response) => {
+                      captureRewriteAttr(elem, "data", response.url);
+                      return response;
+                    });
                   });
                 }
                 break;
@@ -1720,6 +1815,7 @@
             break;
           }
 
+          // form: input
           case "input": {
             switch (elem.type.toLowerCase()) {
               // images: input
@@ -1758,23 +1854,70 @@
                 }
                 break;
               }
-              // form: input (file, password)
-              case "password":
+              // form: input (file)
               case "file": {
-                // always forget
+                break;
+              }
+              // form: input (password)
+              case "password": {
+                switch (options["capture.formStatus"]) {
+                  case "save-all":
+                    if (elemOrig) {
+                      const value = elemOrig.value;
+                      if (value !== elem.getAttribute('value')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-value", value);
+                        requireBasicLoader = true;
+                      }
+                    }
+                    break;
+                  case "keep-all":
+                  case "html-all":
+                    if (elemOrig) {
+                      captureRewriteAttr(elem, "value", elemOrig.value);
+                    }
+                    break;
+                  case "save":
+                  case "keep":
+                  case "html":
+                  case "reset":
+                  default:
+                    // do nothing
+                    break;
+                }
                 break;
               }
               // form: input (radio, checkbox)
               case "radio":
               case "checkbox": {
                 switch (options["capture.formStatus"]) {
-                  case "keep":
+                  case "save-all":
+                  case "save":
                     if (elemOrig) {
-                      captureRewriteAttr(elem, "checked", elemOrig.checked ? "checked" : null);
-                      if (elemOrig.indeterminate && elem.type.toLowerCase() === 'checkbox') {
+                      const checked = elemOrig.checked;
+                      if (checked !== elem.hasAttribute('checked')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-checked", checked);
+                        requireBasicLoader = true;
+                      }
+                      const indeterminate = elemOrig.indeterminate;
+                      if (indeterminate && elem.type.toLowerCase() === 'checkbox') {
                         captureRewriteAttr(elem, "data-scrapbook-input-indeterminate", "");
                         requireBasicLoader = true;
                       }
+                    }
+                    break;
+                  case "keep-all":
+                  case "keep":
+                    if (elemOrig) {
+                      const indeterminate = elemOrig.indeterminate;
+                      if (indeterminate && elem.type.toLowerCase() === 'checkbox') {
+                        captureRewriteAttr(elem, "data-scrapbook-input-indeterminate", "");
+                        requireBasicLoader = true;
+                      }
+                    }
+                  case "html-all":
+                  case "html":
+                    if (elemOrig) {
+                      captureRewriteAttr(elem, "checked", elemOrig.checked ? "checked" : null);
                     }
                     break;
                   case "reset":
@@ -1787,7 +1930,20 @@
               // form: input (other)
               default: {
                 switch (options["capture.formStatus"]) {
+                  case "save-all":
+                  case "save":
+                    if (elemOrig) {
+                      const value = elemOrig.value;
+                      if (value !== elem.getAttribute('value')) {
+                        captureRewriteAttr(elem, "data-scrapbook-input-value", value);
+                        requireBasicLoader = true;
+                      }
+                    }
+                    break;
+                  case "keep-all":
                   case "keep":
+                  case "html-all":
+                  case "html":
                     if (elemOrig) {
                       captureRewriteAttr(elem, "value", elemOrig.value);
                     }
@@ -1806,7 +1962,20 @@
           // form: option
           case "option": {
             switch (options["capture.formStatus"]) {
+              case "save-all":
+              case "save":
+                if (elemOrig) {
+                  const selected = elemOrig.selected;
+                  if (selected !== elem.hasAttribute('selected')) {
+                    captureRewriteAttr(elem, "data-scrapbook-option-selected", selected);
+                    requireBasicLoader = true;
+                  }
+                }
+                break;
+              case "keep-all":
               case "keep":
+              case "html-all":
+              case "html":
                 if (elemOrig) {
                   captureRewriteAttr(elem, "selected", elemOrig.selected ? "selected" : null);
                 }
@@ -1822,7 +1991,20 @@
           // form: textarea
           case "textarea": {
             switch (options["capture.formStatus"]) {
+              case "save-all":
+              case "save":
+                if (elemOrig) {
+                  const value = elemOrig.value;
+                  if (value !== elem.textContent) {
+                    captureRewriteAttr(elem, "data-scrapbook-textarea-value", value);
+                    requireBasicLoader = true;
+                  }
+                }
+                break;
+              case "keep-all":
               case "keep":
+              case "html-all":
+              case "html":
                 if (elemOrig) {
                   captureRewriteTextContent(elem, elemOrig.value);
                 }
@@ -1844,39 +2026,26 @@
         }
 
         // handle shadow DOM
-        switch (options["capture.shadowDom"]) {
-          case "save": {
-            const shadowRootOrig = elemOrig && elemOrig.shadowRoot;
-            if (!shadowRootOrig) { break; }
-
-            const shadowRoot = elem.attachShadow({mode: 'open'});
-            origNodeMap.set(shadowRoot, shadowRootOrig);
-            clonedNodeMap.set(shadowRootOrig, shadowRoot);
-            for (const elem of shadowRootOrig.childNodes) {
-              shadowRoot.appendChild(cloneNodeMapping(elem, true));
-            }
-
+        {
+          const shadowRoot = elem.shadowRoot;
+          if (shadowRoot) {
+            const shadowRootOrig = origNodeMap.get(shadowRoot);
             addAdoptedStyleSheets(shadowRootOrig, shadowRoot);
-            rewriteRecursively(shadowRoot, shadowRoot.nodeName.toLowerCase(), rewriteNode);
-            shadowRootList.push({
-              host: elem,
-              shadowRoot,
-            });
+            rewriteRecursively(shadowRoot, rootName, rewriteNode);
+            shadowRootList.push(shadowRoot);
             requireBasicLoader = true;
-            break;
-          }
-          default: {
-            break;
           }
         }
 
-        // handle integrity and crossorigin
-        // We have to remove integrity check because we could modify the content
-        // and they might not work correctly in the offline environment.
-        if (options["capture.removeIntegrity"]) {
-          captureRewriteAttr(elem, "integrity", null);
-          captureRewriteAttr(elem, "crossorigin", null);
-          captureRewriteAttr(elem, "nonce", null); // this is meaningless as CSP is removed
+        // handle nonce
+        switch (options["capture.contentSecurityPolicy"]) {
+          case "save":
+            // do nothing
+            break;
+          case "remove":
+          default:
+            captureRewriteAttr(elem, "nonce", null); // this is meaningless as CSP is removed
+            break;
         }
       }
 
@@ -1965,7 +2134,7 @@
 
     const {doc = document, settings} = params;
     const {timeId, isHeadless, isMainPage, isMainFrame} = settings;
-    const {contentType: mime, documentElement: htmlNode} = doc;
+    const {contentType: mime, documentElement: docElemNode} = doc;
 
     // allow overwriting by capture helpers
     let {options} = params;
@@ -1997,12 +2166,6 @@
     // alias of baseUrl for resolving links and resources
     const refUrl = baseUrl;
 
-    // create a new document to replicate nodes via import
-    const newDoc = (new DOMParser()).parseFromString(
-      '<' + htmlNode.nodeName.toLowerCase() + '/>',
-      DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
-    );
-
     if (isMainPage && isMainFrame) {
       settings.indexFilename = await capturer.formatIndexFilename({
         title: settings.title || doc.title || scrapbook.filenameParts(scrapbook.urlToFilename(docUrl))[0] || "untitled",
@@ -2018,7 +2181,7 @@
     const registry = await capturer.invoke("registerDocument", {
       docUrl,
       mime,
-      role: ["singleHtml"].includes(options["capture.saveAs"]) ? undefined :
+      role: options["capture.saveAs"] === "singleHtml" ? undefined :
           (isMainFrame || isHeadless) ? "document" : `document-${scrapbook.getUuid()}`,
       settings,
       options,
@@ -2027,7 +2190,7 @@
     // if a previous registry exists, return it
     if (registry.isDuplicate) {
       return Object.assign({}, registry, {
-        url: registry.url + (registry.url.startsWith('data:') ? '' : docUrlHash),
+        url: capturer.getRedirectedUrl(registry.url, docUrlHash),
       });
     }
 
@@ -2041,19 +2204,26 @@
     // construct the cloned node tree
     const origNodeMap = new WeakMap();
     const clonedNodeMap = new WeakMap();
-    const specialContentMap = new Map();
+    const escapedNoscriptList = [];
     const shadowRootList = [];
+
+    // create a new document to replicate nodes via import
+    const newDoc = scrapbook.cloneDocument(doc, {origNodeMap, clonedNodeMap});
+
     let rootNode, headNode;
     let selection = settings.fullPage ? null : doc.getSelection();
     {
-      if (selection && selection.isCollapsed) { selection = null; }
-      // capture selection: clone selected ranges
+      if (selection && selection.isCollapsed) {
+        selection = null;
+      }
+
       if (selection) {
+        // capture selection: clone selected ranges
         const cloneNodeAndAncestors = (node) => {
           const nodeChain = [];
           let tmpNode = node;
 
-          while (tmpNode && !clonedNodeMap.has(tmpNode)) {
+          while (!clonedNodeMap.has(tmpNode)) {
             nodeChain.unshift(tmpNode);
             tmpNode = tmpNode.parentNode;
           }
@@ -2072,52 +2242,35 @@
 
         // @FIXME: handle sparsely selected table cells
         let iRange = 0, iRangeMax = selection.rangeCount, curRange;
-        let caNode, scNode, ecNode, firstNode, lastNode, lastNodePrev;
+        let caNode, scNode, ecNode, lastTextNode;
         for (; iRange < iRangeMax; ++iRange) {
           curRange = selection.getRangeAt(iRange);
+
+          // skip a collapsed range
+          if (curRange.collapsed) {
+            continue;
+          }
+
           caNode = curRange.commonAncestorContainer;
 
-          // In some cases (e.g. view image) the selection is the html node and
-          // causes subsequent errors. We treat it as if there's no selection.
-          if (caNode.nodeName.toLowerCase() === "html") {
-            selection = null;
-            break;
-          }
-
           // @TODO:
-          // A selection in a shadow root will cause an error and requires special care.
-          // Currently treat as no selection.
+          // A selection in a shadow root requires special care.
+          // Currently treat as selecting the topmost host for simplicity and
+          // prevent an issue if capturing shadow DOM is disabled.
           if (caNode.getRootNode().nodeType === 11) {
-            selection = null;
-            break;
-          }
-
-          // For the first range, clone html and head.
-          if (iRange === 0) {
-            rootNode = cloneNodeMapping(htmlNode, false);
-
-            if (rootNode.nodeName.toLowerCase() === "html") {
-              headNode = doc.querySelector("head");
-              if (headNode) {
-                headNode = cloneNodeMapping(headNode, true);
-              } else {
-                headNode = newDoc.createElement("head");
-                captureRecordAddedNode(headNode);
-              }
-              rootNode.appendChild(headNode);
-              rootNode.appendChild(newDoc.createTextNode("\n"));
+            let selNode = caNode;
+            let selNodeRoot = selNode.getRootNode();
+            while (selNodeRoot.nodeType === 11) {
+              selNode = selNodeRoot.host;
+              selNodeRoot = selNode.getRootNode();
             }
+            curRange = new Range();
+            curRange.selectNode(selNode);
+            caNode = curRange.commonAncestorContainer;
           }
 
-          // Calculate the first and last node of selection
-          firstNode = scNode = curRange.startContainer;
-          if (!isTextNode(scNode) && curRange.startOffset !== 0) {
-            firstNode = firstNode.childNodes[curRange.startOffset];
-          }
-          lastNode = ecNode = curRange.endContainer;
-          if (!isTextNode(ecNode) && curRange.endOffset !== 0) {
-            lastNode = lastNode.childNodes[curRange.endOffset - 1];
-          }
+          scNode = curRange.startContainer;
+          ecNode = curRange.endContainer;
 
           // Clone nodes from root to common ancestor.
           // (with special handling of text nodes)
@@ -2128,73 +2281,57 @@
             clonedRefNode = clonedNodeMap.get(refNode);
           }
 
-          // Add splitter.
-          //
-          // @TODO: splitter for other node type?
-          // Some tags like <td> require special care.
-          if (lastNodePrev && firstNode.parentNode === lastNodePrev.parentNode &&
-              isTextNode(lastNodePrev) && isTextNode(firstNode)) {
+          // Add splitter between multiple ranges of the same text-like node.
+          if (scNode === lastTextNode) {
             clonedRefNode.appendChild(newDoc.createComment("scrapbook-capture-selected-splitter"));
-            clonedRefNode.appendChild(newDoc.createTextNode(" … "));
+            if (scNode.nodeType === 8) {
+              clonedRefNode.appendChild(newDoc.createComment(" … "));
+            } else {
+              clonedRefNode.appendChild(newDoc.createTextNode(" … "));
+            }
             clonedRefNode.appendChild(newDoc.createComment("/scrapbook-capture-selected-splitter"));
           }
-          lastNodePrev = lastNode;
 
           // Clone sparingly selected nodes in the common ancestor.
           // (with special handling of text nodes)
           clonedRefNode.appendChild(newDoc.createComment("scrapbook-capture-selected"));
           {
-            const iterator = doc.createNodeIterator(refNode, -1);
-            let node, started = false;
-            while ((node = iterator.nextNode())) {
-              if (!started) {
-                // skip nodes before the start container
-                if (node !== firstNode) { continue; }
+            const iterator = doc.createNodeIterator(refNode, NodeFilter.SHOW_ALL & ~NodeFilter.SHOW_DOCUMENT);
+            let node;
+            let nodeRange = doc.createRange();
+            while (node = iterator.nextNode()) {
+              nodeRange.selectNode(node);
 
-                // mark started
-                started = true;
-
-                // handle start container
-                if (isTextNode(scNode)) {
-                  // firstNode is a partial selected text-like node,
-                  // clone it with cropped text. Do not map it since
-                  // there could be another selection.
-                  const start = curRange.startOffset;
-                  const end = (node === lastNode) ? curRange.endOffset : undefined;
+              if (nodeRange.compareBoundaryPoints(Range.START_TO_START, curRange) < 0) {
+                // before start
+                if (node === scNode && isTextNode(node) &&
+                    nodeRange.compareBoundaryPoints(Range.START_TO_END, curRange) > 0) {
+                  let start = curRange.startOffset;
+                  let end = (node === ecNode) ? curRange.endOffset : undefined;
                   cloneNodeAndAncestors(node.parentNode);
                   const newParentNode = clonedNodeMap.get(node.parentNode);
                   const newNode = node.cloneNode(false);
                   newNode.nodeValue = node.nodeValue.slice(start, end);
                   newParentNode.appendChild(newNode);
-                } else {
-                  cloneNodeAndAncestors(node);
+                  lastTextNode = node;
                 }
-
-                if (node === lastNode) { break; }
-
                 continue;
               }
 
-              if (node === lastNode) {
-                if (node !== firstNode) {
-                  // handle end container
-                  if (isTextNode(ecNode)) {
-                    // lastNode is a partial selected text-like node,
-                    // clone it with cropped text. Do not map it since
-                    // there could be another selection.
-                    const start = 0;
-                    const end = curRange.endOffset;
-                    cloneNodeAndAncestors(node.parentNode);
-                    const newParentNode = clonedNodeMap.get(node.parentNode);
-                    const newNode = node.cloneNode(false);
-                    newNode.nodeValue = node.nodeValue.slice(start, end);
-                    newParentNode.appendChild(newNode);
-                  } else {
-                    cloneNodeAndAncestors(node);
-                  }
+              if (nodeRange.compareBoundaryPoints(Range.END_TO_END, curRange) > 0) {
+                // after end
+                if (node === ecNode && isTextNode(node) &&
+                    nodeRange.compareBoundaryPoints(Range.END_TO_START, curRange) < 0) {
+                  let start = 0;
+                  let end = curRange.endOffset;
+                  cloneNodeAndAncestors(node.parentNode);
+                  const newParentNode = clonedNodeMap.get(node.parentNode);
+                  const newNode = node.cloneNode(false);
+                  newNode.nodeValue = node.nodeValue.slice(start, end);
+                  newParentNode.appendChild(newNode);
+                  lastTextNode = node;
                 }
-
-                break;
+                continue;
               }
 
               // clone the node
@@ -2203,14 +2340,52 @@
           }
           clonedRefNode.appendChild(newDoc.createComment("/scrapbook-capture-selected"));
         }
-      }
 
-      // not capture selection: clone all nodes
-      if (!selection) {
-        rootNode = cloneNodeMapping(htmlNode, true);
+        // clone doctype if not yet done
+        {
+          const doctypeNode = doc.doctype;
+          if (doctypeNode) {
+            if (!clonedNodeMap.has(doctypeNode)) {
+              newDoc.insertBefore(cloneNodeMapping(doctypeNode, false), newDoc.firstChild);
+            }
+          }
+        }
 
+        // clone html if not yet done
+        rootNode = clonedNodeMap.get(docElemNode);
+        if (!rootNode) {
+          cloneNodeAndAncestors(docElemNode);
+          rootNode = clonedNodeMap.get(docElemNode);
+        }
+
+        // clone head if not yet done
+        // (treated as all head is selected if not involved yet)
+        // generate one if not exist
         if (rootNode.nodeName.toLowerCase() === "html") {
-          headNode = rootNode.querySelector("head");
+          headNode = doc.head;
+          let headNodeNew = clonedNodeMap.get(headNode);
+          if (headNodeNew) {
+            headNode = headNodeNew;
+          } else {
+            if (headNode) {
+              headNode = cloneNodeMapping(headNode, true);
+            } else {
+              headNode = newDoc.createElement("head");
+              captureRecordAddedNode(headNode);
+            }
+            rootNode.insertBefore(headNode, rootNode.firstChild);
+          }
+        }
+      } else {
+        // not capture selection: clone all nodes
+        for (const node of doc.childNodes) {
+          newDoc.appendChild(cloneNodeMapping(node, true));
+        }
+        rootNode = newDoc.documentElement;
+
+        // generate head if not exists
+        if (rootNode.nodeName.toLowerCase() === "html") {
+          headNode = newDoc.head;
           if (!headNode) {
             headNode = rootNode.insertBefore(newDoc.createElement("head"), rootNode.firstChild);
             captureRecordAddedNode(headNode);
@@ -2219,28 +2394,30 @@
       }
 
       // add linefeeds to head and body to improve layout
-      if (rootNode.nodeName.toLowerCase() === "html") {
-        const headNodeBefore = headNode.previousSibling;
-        if (!headNodeBefore || headNodeBefore.nodeType != 3) {
-          rootNode.insertBefore(newDoc.createTextNode("\n"), headNode);
-        }
-        const headNodeStart = headNode.firstChild;
-        if (!headNodeStart || headNodeStart.nodeType != 3) {
-          headNode.insertBefore(newDoc.createTextNode("\n"), headNodeStart);
-        }
-        const headNodeEnd = headNode.lastChild;
-        if (!headNodeEnd || headNodeEnd.nodeType != 3) {
-          headNode.appendChild(newDoc.createTextNode("\n"));
-        }
-        const headNodeAfter = headNode.nextSibling;
-        if (!headNodeAfter || headNodeAfter.nodeType != 3) {
-          rootNode.insertBefore(newDoc.createTextNode("\n"), headNodeAfter);
-        }
-        const bodyNode = rootNode.querySelector("body");
-        if (bodyNode) {
-          const bodyNodeAfter = bodyNode.nextSibling;
-          if (!bodyNodeAfter) {
-            rootNode.insertBefore(newDoc.createTextNode("\n"), bodyNodeAfter);
+      if (options["capture.prettyPrint"]) {
+        if (rootNode.nodeName.toLowerCase() === "html") {
+          const headNodeBefore = headNode.previousSibling;
+          if (!headNodeBefore || headNodeBefore.nodeType != 3) {
+            rootNode.insertBefore(newDoc.createTextNode("\n"), headNode);
+          }
+          const headNodeStart = headNode.firstChild;
+          if (!headNodeStart || headNodeStart.nodeType != 3) {
+            headNode.insertBefore(newDoc.createTextNode("\n"), headNodeStart);
+          }
+          const headNodeEnd = headNode.lastChild;
+          if (!headNodeEnd || headNodeEnd.nodeType != 3) {
+            headNode.appendChild(newDoc.createTextNode("\n"));
+          }
+          const headNodeAfter = headNode.nextSibling;
+          if (!headNodeAfter || headNodeAfter.nodeType != 3) {
+            rootNode.insertBefore(newDoc.createTextNode("\n"), headNodeAfter);
+          }
+          const bodyNode = rootNode.querySelector("body");
+          if (bodyNode) {
+            const bodyNodeAfter = bodyNode.nextSibling;
+            if (!bodyNodeAfter) {
+              rootNode.insertBefore(newDoc.createTextNode("\n"), bodyNodeAfter);
+            }
           }
         }
       }
@@ -2305,7 +2482,7 @@
     let metaCharsetNode;
     let favIconUrl;
     let requireBasicLoader = false;
-    rewriteRecursively(rootNode, rootNode.nodeName.toLowerCase(), rewriteNode);
+    rewriteRecursively(rootNode, null, rewriteNode);
 
     // record metadata
     if (options["capture.recordDocumentMeta"]) {
@@ -2371,12 +2548,17 @@
       return prevTask.then(curTask);
     }, Promise.resolve());
 
+    // recover escaped noscripts
+    for (const node of escapedNoscriptList) {
+      if (!node.isConnected) { continue; }
+      const newElem = newDoc.createElement('noscript');
+      newElem.innerHTML = node.innerHTML;
+      node.replaceWith(newElem);
+    }
+
     // record after the content of all nested shadow roots have been processed
-    for (const {host, shadowRoot} of shadowRootList) {
-      captureRewriteAttr(host, "data-scrapbook-shadowroot", JSON.stringify({
-        data: shadowRoot.innerHTML,
-        mode: "open",
-      }));
+    for (const shadowRoot of shadowRootList) {
+      captureRewriteAttr(shadowRoot.host, "data-scrapbook-shadowdom", shadowRoot.innerHTML);
     }
 
     // attach CSS resource map
@@ -2399,11 +2581,7 @@
     });
 
     // save document
-    let content = scrapbook.doctypeToString(doc.doctype) + rootNode.outerHTML;
-    content = content.replace(/jc-([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/g, (match, key) => {
-      if (specialContentMap.has(key)) { return specialContentMap.get(key); }
-      return match;
-    });
+    let content = scrapbook.documentToString(newDoc, options["capture.prettyPrint"]);
 
     // pass content as Blob to prevent size limitation of a message
     // (for a supported browser)
@@ -2412,7 +2590,7 @@
     }
 
     const response = await capturer.invoke("saveDocument", {
-      sourceUrl: docUrl,
+      sourceUrl: capturer.getRedirectedUrl(docUrl, docUrlHash),
       documentFileName,
       settings,
       options,
@@ -2430,7 +2608,7 @@
     }
 
     return Object.assign({}, response, {
-      url: response.url + (response.url.startsWith('data:') ? '' : docUrlHash),
+      url: capturer.getRedirectedUrl(response.url, docUrlHash),
     });
   };
 
@@ -2462,26 +2640,12 @@
       }
 
       const cloneNodeMapping = (node, deep = false) => {
-        const newNode = newDoc.importNode(node, deep);
-        origNodeMap.set(newNode, node);
-        clonedNodeMap.set(node, newNode);
-
-        // map descendants
-        if (deep) {
-          const doc = node.ownerDocument;
-          const walker1 = doc.createNodeIterator(node);
-          const walker2 = newDoc.createNodeIterator(newNode);
-          let node1 = walker1.nextNode();
-          let node2 = walker2.nextNode();
-          while (node1) {
-            origNodeMap.set(node2, node1);
-            clonedNodeMap.set(node1, node2);
-            node1 = walker1.nextNode();
-            node2 = walker2.nextNode();
-          }
-        }
-
-        return newNode;
+        return scrapbook.cloneNode(node, deep, {
+          newDoc,
+          origNodeMap,
+          clonedNodeMap,
+          includeShadowDom: true,
+        });
       };
 
       const addResource = (url) => {
@@ -2616,47 +2780,55 @@
         // update shadow root data
         if (shadowRootSupported) {
           for (const elem of rootNode.querySelectorAll("*")) {
-            elem.removeAttribute("data-scrapbook-shadowroot");
-
-            const elemOrig = origNodeMap.get(elem);
-            if (!elemOrig) { continue; }
-
-            const shadowRootOrig = elemOrig.shadowRoot;
-            if (!shadowRootOrig) { continue; }
-
-            const shadowRoot = elem.attachShadow({mode: 'open'});
-            origNodeMap.set(shadowRoot, shadowRootOrig);
-            clonedNodeMap.set(shadowRootOrig, shadowRoot);
-            for (const elem of shadowRootOrig.childNodes) {
-              shadowRoot.appendChild(cloneNodeMapping(elem, true));
-            }
+            elem.removeAttribute("data-scrapbook-shadowdom");
+            elem.removeAttribute("data-scrapbook-shadowroot"); // WebScrapBook < 0.115
+            const shadowRoot = elem.shadowRoot;
+            if (!shadowRoot) { continue; }
             processRootNode(shadowRoot);
-            elem.setAttribute("data-scrapbook-shadowroot", JSON.stringify({
-              data: shadowRoot.innerHTML,
-              mode: "open",
-            }));
+            elem.setAttribute("data-scrapbook-shadowdom", shadowRoot.innerHTML);
             requireBasicLoader = true;
           }
         } else {
           // shadowRoot not supported by the browser.
           // Just record whether there's a recorded shadow root.
-          if (rootNode.querySelector('[data-scrapbook-shadowroot]')) {
+          if (rootNode.querySelector('[data-scrapbook-shadowdom]')) {
             requireBasicLoader = true;
+          }
+          // convert old data-scrapbook-shadowroot recursively (WebScrapBook < 0.115)
+          {
+            const convert = (rootNode) => {
+              for (const elem of rootNode.querySelectorAll('[data-scrapbook-shadowroot]')) {
+                try {
+                  const {data} = JSON.parse(elem.getAttribute('data-scrapbook-shadowroot'));
+                  const t = rootNode.ownerDocument.createElement('template');
+                  t.innerHTML = data;
+                  convert(t.content);
+                  elem.setAttribute("data-scrapbook-shadowdom", t.innerHTML);
+                  requireBasicLoader = true;
+                } catch (ex) {
+                  console.error(ex);
+                }
+                elem.removeAttribute('data-scrapbook-shadowroot');
+              }
+            };
+            convert(rootNode);
           }
         }
       };
 
-      const {contentType: mime, characterSet: charset, documentElement: htmlNode} = doc;
-
-      // create a new document to replicate nodes via import
-      const newDoc = (new DOMParser()).parseFromString(
-        '<' + htmlNode.nodeName.toLowerCase() + '/>',
-        DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
-      );
+      const {contentType: mime, characterSet: charset, documentElement: docElemNode} = doc;
 
       const origNodeMap = new WeakMap();
       const clonedNodeMap = new WeakMap();
-      const rootNode = cloneNodeMapping(htmlNode, true);
+
+      // create a new document to replicate nodes via import
+      const newDoc = scrapbook.cloneDocument(doc, {origNodeMap, clonedNodeMap});
+
+      for (const node of doc.childNodes) {
+        newDoc.appendChild(cloneNodeMapping(node, true));
+      }
+
+      const rootNode = newDoc.documentElement;
       const isMainFrame = i === 0;
       const info = {
         isMainFrame,
@@ -2683,7 +2855,7 @@
         insertInfoBar: options["capture.insertInfoBar"],
       });
 
-      let content = scrapbook.doctypeToString(doc.doctype) + rootNode.outerHTML;
+      let content = scrapbook.documentToString(newDoc, options["capture.prettyPrint"]);
 
       // pass content as Blob to prevent size limitation of a message
       // (for a supported browser)
@@ -2732,9 +2904,8 @@
         selectedNodes.push(node);
       }
 
-      // handle descendant node first as it may be altered when handling ancestor
-      for (const elem of selectedNodes.reverse()) {
-        elem.remove();
+      for (const node of selectedNodes) {
+        node.remove();
       }
     }
 
@@ -2750,39 +2921,61 @@
         ].join(','))) {
       elem.remove();
     }
+    const bodyNode = rootNode.querySelector('body') || rootNode;
     if (requireBasicLoader) {
-      const loader = rootNode.appendChild(doc.createElement("script"));
+      const loader = bodyNode.appendChild(doc.createElement("script"));
       loader.setAttribute("data-scrapbook-elem", "basic-loader");
       // Keep downward compatibility with IE8.
       // indeterminate checkbox: IE >= 6, getAttribute: IE >= 8
       // HTMLCanvasElement: Firefox >= 1.5, querySelectorAll: Firefox >= 3.5
       // getElementsByTagName is not implemented for DocumentFragment (shadow root)
       loader.textContent = "(" + scrapbook.compressJsFunc(function () {
-        var k1 = "data-scrapbook-shadowroot", k2 = "data-scrapbook-input-indeterminate", k3 = "data-scrapbook-canvas",
+        var k1 = "data-scrapbook-shadowdom",
+            k2 = "data-scrapbook-canvas",
+            k3 = "data-scrapbook-input-indeterminate",
+            k4 = "data-scrapbook-input-checked",
+            k5 = "data-scrapbook-option-selected",
+            k6 = "data-scrapbook-input-value",
+            k7 = "data-scrapbook-textarea-value",
             fn = function (r) {
               var E = r.querySelectorAll ? r.querySelectorAll("*") : r.getElementsByTagName("*"), i = E.length, e, d, s;
               while (i--) {
                 e = E[i];
-                if (e.hasAttribute(k1) && !e.shadowRoot && e.attachShadow) {
-                  d = JSON.parse(e.getAttribute(k1));
-                  s = e.attachShadow({mode: d.mode});
-                  s.innerHTML = d.data;
+                if ((d = e.getAttribute(k1)) !== null && !e.shadowRoot && e.attachShadow) {
+                  s = e.attachShadow({mode: 'open'});
+                  s.innerHTML = d;
                   e.removeAttribute(k1);
                 }
-                if (e.shadowRoot) {
-                  fn(e.shadowRoot);
-                }
-                if (e.hasAttribute(k2)) {
-                  e.indeterminate = true;
-                  e.removeAttribute(k2);
-                }
-                if (e.hasAttribute(k3)) {
+                if ((d = e.getAttribute(k2)) !== null) {
                   (function () {
                     var c = e, g = new Image();
                     g.onload = function () { c.getContext('2d').drawImage(g, 0, 0); };
-                    g.src = c.getAttribute(k3);
-                    c.removeAttribute(k3);
+                    g.src = d;
                   })();
+                  e.removeAttribute(k2);
+                }
+                if ((d = e.getAttribute(k3)) !== null) {
+                  e.indeterminate = true;
+                  e.removeAttribute(k3);
+                }
+                if ((d = e.getAttribute(k4)) !== null) {
+                  e.checked = d === 'true';
+                  e.removeAttribute(k4);
+                }
+                if ((d = e.getAttribute(k5)) !== null) {
+                  e.selected = d === 'true';
+                  e.removeAttribute(k5);
+                }
+                if ((d = e.getAttribute(k6)) !== null) {
+                  e.value = d;
+                  e.removeAttribute(k6);
+                }
+                if ((d = e.getAttribute(k7)) !== null) {
+                  e.value = d;
+                  e.removeAttribute(k7);
+                }
+                if (e.shadowRoot) {
+                  fn(e.shadowRoot);
                 }
               }
             };
@@ -2805,7 +2998,7 @@
           break insertInfoBar;
         }
 
-        const loader = rootNode.appendChild(doc.createElement("script"));
+        const loader = bodyNode.appendChild(doc.createElement("script"));
         loader.setAttribute("data-scrapbook-elem", "infobar-loader");
 
         // This is compatible with IE5 (though position: fixed doesn't work in IE < 7).
@@ -2867,11 +3060,11 @@
         }) + ")()").replace(/%([\w@]*)%/g, (_, key) => data[key] || scrapbook.lang(key) || '');
       }
     }
-    if (rootNode.querySelector('[data-scrapbook-elem="linemarker"], [data-scrapbook-elem="sticky"]')) {
-      const css = rootNode.appendChild(doc.createElement("style"));
+    if (rootNode.querySelector('[data-scrapbook-elem="linemarker"][title], [data-scrapbook-elem="sticky"]')) {
+      const css = bodyNode.appendChild(doc.createElement("style"));
       css.setAttribute("data-scrapbook-elem", "annotation-css");
       css.textContent = scrapbook.compressCode(scrapbook.ANNOTATION_CSS);
-      const loader = rootNode.appendChild(doc.createElement("script"));
+      const loader = bodyNode.appendChild(doc.createElement("script"));
       loader.setAttribute("data-scrapbook-elem", "annotation-loader");
       // Mobile support with showing title on long touch.
       // Firefox >= 52, Chrome >= 22, Edge >= 12
@@ -2926,6 +3119,12 @@
     }));
   };
 
+  class ItemInfoFormatter extends scrapbook.ItemInfoFormatter {
+    format_uuid() {
+      return scrapbook.getUuid();
+    }
+  }
+
   /**
    * Format filename of the main item file to save.
    *
@@ -2937,120 +3136,56 @@
    * @param {Object} params.options
    * @return {string} The formatted filename.
    */
-  capturer.formatIndexFilename = async function ({title, sourceUrl, isFolder, settings, options}) {
-    const time = scrapbook.idToDate(settings.timeId);
-    const u = new URL(sourceUrl);
-
-    const tidy = (filename) => {
-      return scrapbook.validateFilename(filename, options["capture.saveAsciiFilename"]);
+  capturer.formatIndexFilename = async function ({
+    title, sourceUrl, isFolder,
+    settings: {
+      timeId: id,
+    } = {},
+    options: {
+      "capture.saveFilename": template,
+      "capture.saveAsciiFilename": saveAsciiFilename,
+      "capture.saveFilenameMaxLenUtf16": saveFilenameMaxLenUtf16,
+      "capture.saveFilenameMaxLenUtf8": saveFilenameMaxLenUtf8,
+    } = {},
+  }) {
+    // a dummy scrapbook item for formatting
+    const item = {
+      id,
+      create: id,
+      title,
+      source: sourceUrl,
     };
 
-    let filename = options["capture.saveFilename"].replace(/%(\w*)%/g, (_, key) => {
-      switch (key.toUpperCase()) {
-        case "": {
-          // escape "%" with "%%"
-          return "%";
-        }
-        case "ID": {
-          return settings.timeId;
-        }
-        case "ID_0": {
-          return scrapbook.dateToIdOld(scrapbook.idToDate(settings.timeId));
-        }
-        case "UUID": {
-          return scrapbook.getUuid();
-        }
-        case "TITLE": {
-          return tidy(title);
-        }
-        case "HOST": {
-          return tidy(u.host);
-        }
-        case "PAGE": {
-          return tidy(scrapbook.filenameParts(scrapbook.urlToFilename(sourceUrl))[0]);
-        }
-        case "FILE": {
-          return tidy(scrapbook.urlToFilename(sourceUrl));
-        }
-        case "DATE": {
-          return [
-            time.getFullYear(),
-            scrapbook.intToFixedStr(time.getMonth() + 1, 2),
-            scrapbook.intToFixedStr(time.getDate(), 2),
-          ].join('-');
-        }
-        case "DATE_UTC": {
-          return [
-            time.getUTCFullYear(),
-            scrapbook.intToFixedStr(time.getUTCMonth() + 1, 2),
-            scrapbook.intToFixedStr(time.getUTCDate(), 2),
-          ].join('-');
-        }
-        case "TIME": {
-          return [
-            scrapbook.intToFixedStr(time.getHours(), 2),
-            scrapbook.intToFixedStr(time.getMinutes(), 2),
-            scrapbook.intToFixedStr(time.getSeconds(), 2),
-          ].join('-');
-        }
-        case "TIME_UTC": {
-          return [
-            scrapbook.intToFixedStr(time.getUTCHours(), 2),
-            scrapbook.intToFixedStr(time.getUTCMinutes(), 2),
-            scrapbook.intToFixedStr(time.getUTCSeconds(), 2),
-          ].join('-');
-        }
-        case "YEAR": {
-          return time.getFullYear();
-        }
-        case "YEAR_UTC": {
-          return time.getUTCFullYear();
-        }
-        case "MONTH": {
-          return scrapbook.intToFixedStr(time.getMonth() + 1, 2);
-        }
-        case "MONTH_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCMonth() + 1, 2);
-        }
-        case "DAY": {
-          return scrapbook.intToFixedStr(time.getDate(), 2);
-        }
-        case "DAY_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCDate(), 2);
-        }
-        case "HOURS": {
-          return scrapbook.intToFixedStr(time.getHours(), 2);
-        }
-        case "HOURS_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCHours(), 2);
-        }
-        case "MINUTES": {
-          return scrapbook.intToFixedStr(time.getMinutes(), 2);
-        }
-        case "MINUTES_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCMinutes(), 2);
-        }
-        case "SECONDS": {
-          return scrapbook.intToFixedStr(time.getSeconds(), 2);
-        }
-        case "SECONDS_UTC": {
-          return scrapbook.intToFixedStr(time.getUTCSeconds(), 2);
-        }
-        default: {
-          return '';
-        }
-      }
-    });
-
-    filename = filename
+    const formatter = new ItemInfoFormatter(item);
+    let filename = template
       .split('/')
-      .map(x => scrapbook.validateFilename(x, options["capture.saveAsciiFilename"]))
+      .map(x => scrapbook.validateFilename(formatter.format(x), saveAsciiFilename))
       .join('/');
 
     // see capturer.getUniqueFilename for limitation details
-    filename = scrapbook.crop(filename, options["capture.saveFilenameMaxLenUtf16"], options["capture.saveFilenameMaxLenUtf8"], "");
+    filename = scrapbook.crop(filename, saveFilenameMaxLenUtf16, saveFilenameMaxLenUtf8, "");
 
     return filename;
+  };
+
+  capturer.getRedirectedUrl = function (redirectedUrl, sourceUrlHash) {
+    const [redirectedUrlMain, redirectedUrlHash] = scrapbook.splitUrlByAnchor(redirectedUrl);
+
+    // Some browsers may encounter an error for a data URL with hash.
+    if (redirectedUrl.startsWith('data:')) {
+      return redirectedUrlMain;
+    }
+
+    // @FIXME:
+    // Browsers usually take the redirected URL hash if it exists.
+    // Unfortunately, XMLHttpRequest and fetch does not keep response URL hash,
+    // and thus this may not actually happen.
+    if (redirectedUrlHash) {
+      return redirectedUrl;
+    }
+
+    // Browsers usually keep source URL hash if the redirected URL has no hash.
+    return redirectedUrlMain + sourceUrlHash;
   };
 
   capturer.resolveRelativeUrl = function (relativeUrl, baseUrl) {
@@ -3123,17 +3258,17 @@
 
         const groups = new Map();
 
-        Array.prototype.forEach.call(this.doc.styleSheets, (css) => {
+        for (const css of this.doc.styleSheets) {
           // ignore imported CSS
           if (!css.ownerNode) {
-            return;
+            continue;
           }
 
           const title = css.title && css.title.trim();
 
           // ignore persistent CSS
           if (!title) {
-            return;
+            continue;
           }
 
           // preferred or alternate
@@ -3141,7 +3276,7 @@
             groups.set(title, []);
           }
           groups.get(title).push(css);
-        });
+        }
 
         const arr = Array.from(groups.values());
 
@@ -3180,55 +3315,252 @@
      * @param {string} selectorText - selectorText of a CSSStyleRule
      */
     verifySelector(root, selectorText) {
-      try {
-        // querySelector of a pseudo selector like a:hover always return null
-        if (root.querySelector(selectorText)) { return true; }
+      // Do not include :not as the semantic is reversed and the rule could be
+      // narrower after rewriting (e.g. :not(:hover) => :not(*)).
+      const ALLOWED_PSEUDO = new Set([
+        'is', 'matches', 'any', 'where', 'has',
+        'first-child', 'first-of-type', 'last-child', 'last-of-type',
+        'nth-child', 'nth-of-type', 'nth-last-child', 'nth-last-of-type',
+        'only-child', 'only-of-type',
+        ]);
 
-        // Preserve a pseudo-class(:*) or pseudo-element(::*) only if:
-        // 1. it's a pure pseudo (e.g. :hover), or
-        // 2. its non-pseudo version (e.g. a for a:hover) exist
-        var hasPseudo = false;
-        var inPseudo = false;
-        var depseudoSelectors = [""];
-        selectorText.replace(
-          /(,\s+)|(\s+)|((?:[\-0-9A-Za-z_\u00A0-\uFFFF]|\\[0-9A-Fa-f]{1,6} ?|\\.)+)|(\[(?:"(?:\\.|[^"])*"|\\.|[^\]])*\])|(.)/g,
-          (m, m1, m2, m3, m4, m5) => {
-            if (m1) {
-              depseudoSelectors.push("");
-              inPseudo = false;
-            } else if (m5 == ":") {
-              hasPseudo = true;
-              inPseudo = true;
-            } else if (inPseudo) {
-              if (!(m3 || m5)) {
-                inPseudo = false;
-                depseudoSelectors[depseudoSelectors.length - 1] += m;
-              }
-            } else {
-              depseudoSelectors[depseudoSelectors.length - 1] += m;
-            }
-            return m;
-          }
-        );
-        if (hasPseudo) {
-          for (let i=0, I=depseudoSelectors.length; i<I; ++i) {
-            if (depseudoSelectors[i] === "" || root.querySelector(depseudoSelectors[i])) return true;
-          };
+      /**
+       * A class that rewrites the given CSS selector to make the rule cover
+       * a reasonably broader range.
+       *
+       * 1. Remove namespace in selector (e.g. svg|a => a).
+       * 2. Recursively remove pseudoes (including pseudo-classes(:*) and
+       *    pseudo-elements(::*))) unless it's listed in ALLOWED_PSEUDO. (e.g.
+       *    div:hover => div).
+       * 3. Add * in place if it will be empty after removal (e.g. :hover => *).
+       */
+      class Rewriter {
+        constructor() {
+          this.regexLiteral = /(?:[0-9A-Za-z_\-\u00A0-\uFFFF]|\\(?:[0-9A-Fa-f]{1,6} ?|.))+|(.)/g;
+          this.regexQuote = /[^"]*(?:\\.[^"]*)*"/g;
         }
-      } catch (ex) {
-        // As CSSStyleRule.selectorText is already a valid selector,
-        // an error means it's valid but not supported by querySelector.
-        // One example is a namespaced selector like: svg|a,
-        // as querySelector cannot consume a @namespace rule in prior.
-        // Return true in such case as false positive is safer than false
-        // negative.
-        //
-        // @TODO:
-        // Full implementation of a correct selector match.
-        return true;
+
+        run(selectorText) {
+          this.tokens = [];
+          this.parse(selectorText, 0);
+          return this.tokens.reduce((result, current) => {
+            return result + current.value;
+          }, '');
+        }
+
+        parse(selectorText, start, endSymbol = null) {
+          this.regexLiteral.lastIndex = start;
+          let match;
+          while (match = this.regexLiteral.exec(selectorText)) {
+            switch (match[1]) {
+              case endSymbol: {
+                this.tokens.push({
+                  type: 'operator',
+                  value: match[0],
+                });
+                return this.regexLiteral.lastIndex;
+                break;
+              }
+              case '(': {
+                this.tokens.push({
+                  type: 'operator',
+                  value: match[0],
+                });
+                this.regexLiteral.lastIndex = this.parse(
+                  selectorText,
+                  this.regexLiteral.lastIndex,
+                  ')',
+                );
+                break;
+              }
+              case '[': {
+                const start = this.regexLiteral.lastIndex;
+                const end = this.regexLiteral.lastIndex = this.matchBracket(selectorText, start);
+                this.tokens.push({
+                  type: 'selector',
+                  value: selectorText.slice(start - 1, end),
+                });
+                break;
+              }
+              case ':': {
+                this.regexLiteral.lastIndex = this.parsePseudo(
+                  selectorText,
+                  this.regexLiteral.lastIndex,
+                  selectorText[this.regexLiteral.lastIndex] === ':',
+                );
+                break;
+              }
+              case '|': {
+                // Special handling for || (column combinator in CSS4 draft)
+                // to prevent misinterpreted as double | operator.
+                {
+                  const pos = this.regexLiteral.lastIndex;
+                  const next = selectorText.slice(pos, pos + 1);
+                  if (next === '|') {
+                    this.regexLiteral.lastIndex++;
+                    this.tokens.push({
+                      type: 'operator',
+                      value: match[0] + next,
+                    });
+                    break;
+                  }
+                }
+
+                const prevToken = this.tokens[this.tokens.length - 1];
+                if (prevToken) {
+                  if (prevToken.type === 'name' || (prevToken.type === 'operator' && prevToken.value === '*')) {
+                    this.tokens.pop();
+                  }
+                }
+                break;
+              }
+              default: {
+                if (match[1]) {
+                  this.tokens.push({
+                    type: 'operator',
+                    value: match[0],
+                  });
+                } else {
+                  this.tokens.push({
+                    type: 'name',
+                    value: match[0],
+                  });
+                }
+                break;
+              }
+            }
+          }
+          return selectorText.length;
+        }
+
+        parsePseudo(selectorText, start, isPseudoElement) {
+          let _tokens = this.tokens;
+          this.tokens = [];
+          let lastIndex = selectorText.length;
+          this.regexLiteral.lastIndex = start + (isPseudoElement ? 1 : 0);
+          let match;
+          while (match = this.regexLiteral.exec(selectorText)) {
+            switch (match[1]) {
+              case '(': {
+                this.tokens.push({
+                  type: 'operator',
+                  value: match[0],
+                });
+                this.regexLiteral.lastIndex = this.parse(
+                  selectorText,
+                  this.regexLiteral.lastIndex,
+                  ')',
+                );
+                break;
+              }
+              default: {
+                if (match[1]) {
+                  lastIndex = this.regexLiteral.lastIndex - 1;
+                  this.regexLiteral.lastIndex = selectorText.length;
+                } else {
+                  this.tokens.push({
+                    type: 'name',
+                    value: match[0],
+                  });
+                }
+                break;
+              }
+            }
+          }
+
+          if (this.tokens[0] && this.tokens[0].type === 'name' && ALLOWED_PSEUDO.has(this.tokens[0].value)) {
+            _tokens.push({
+              type: 'operator',
+              value: isPseudoElement ? '::' : ':',
+            });
+            _tokens = _tokens.concat(this.tokens);
+          } else {
+            addUniversalSelector: {
+              const prevToken = _tokens[_tokens.length - 1];
+              if (prevToken) {
+                if (prevToken.type === 'name' || prevToken.type === 'selector') {
+                  break addUniversalSelector;
+                }
+                if (prevToken.type === 'operator' && prevToken.value === ')') {
+                  break addUniversalSelector;
+                }
+              }
+
+              _tokens.push({
+                type: 'name',
+                value: '*',
+              });
+            }
+          }
+
+          this.tokens = _tokens;
+          return lastIndex;
+        }
+
+        matchBracket(selectorText, start) {
+          this.regexLiteral.lastIndex = start;
+          let match;
+          while (match = this.regexLiteral.exec(selectorText)) {
+            switch (match[1]) {
+              case ']': {
+                return this.regexLiteral.lastIndex;
+                break;
+              }
+              case '"': {
+                this.regexLiteral.lastIndex = this.matchQuote(selectorText, this.regexLiteral.lastIndex);
+                break;
+              }
+            }
+          }
+          return selectorText.length;
+        }
+
+        matchQuote(selectorText, start) {
+          this.regexQuote.lastIndex = start;
+          const m = this.regexQuote.exec(selectorText);
+          if (m) { return this.regexQuote.lastIndex; }
+          return selectorText.length;
+        }
       }
 
-      return false;
+      const verifySelector = (root, selectorText) => {
+        let selectorTextInvalid = false;
+        try {
+          // querySelector of a pseudo selector like a:hover always return null
+          if (root.querySelector(selectorText)) { return true; }
+        } catch (ex) {
+          // As CSSStyleRule.selectorText is already a valid selector,
+          // an error means it's valid but not supported by querySelector.
+          // One example is a namespaced selector like: svg|a,
+          // as querySelector cannot consume a @namespace rule in prior.
+          // Mark selectorText as invalid and test the rewritten selector text
+          // instead.
+          selectorTextInvalid = true;
+        }
+
+        let selectorTextRewritten = new Rewriter().run(selectorText);
+        if (selectorTextInvalid || selectorTextRewritten !== selectorText) {
+          try {
+            if (root.querySelector(selectorTextRewritten)) {
+              return true;
+            }
+          } catch (ex) {
+            // Rewritten rule still not supported by querySelector due to an
+            // unexpected reason.
+            // Return true as false positive is safer than false negative.
+            return true;
+          }
+        }
+
+        return false;
+      };
+
+      Object.defineProperty(this, 'verifySelector', {
+        value: verifySelector,
+        writable: false,
+        configurable: true,
+      });
+      return verifySelector(root, selectorText);
     }
 
     getElemCss(elem) {
@@ -3268,7 +3600,7 @@
      *     request if it's cross origin.
      * @param {boolean} [params.errorWithNull] - Whether to throw an error if
      *     not retrievable.
-     * @return {Array<CSSStyleRule>|null}
+     * @return {?CSSStyleRule[]}
      */
     async getRulesFromCss({css, url, refUrl, crossOrigin = true, errorWithNull = false}) {
       let rules = null;
@@ -4063,7 +4395,7 @@
 
         const registry = await capturer.invoke("registerFile", {
           url: sourceUrl,
-          role: ["singleHtml"].includes(options["capture.saveAs"]) ? undefined :
+          role: options["capture.saveAs"] === "singleHtml" ? undefined :
               isDynamic ? `css-${scrapbook.getUuid()}` : 'css',
           settings,
           options,
@@ -4307,7 +4639,7 @@
         return rootNode.querySelectorAll(selector.css);
       }
       if (typeof selector.xpath === 'string') {
-        const iter = rootNode.ownerDocument.evaluate(selector.xpath, rootNode);
+        const iter = rootNode.ownerDocument.evaluate(selector.xpath, rootNode, null, 0, null);
         let elems = [], elem;
         while (elem = iter.iterateNext()) {
           elems.push(elem);
@@ -4478,7 +4810,7 @@
     cmd_unwrap(rootNode, selector) {
       const elems = this.selectNodes(rootNode, this.resolve(selector, rootNode));
       for (const elem of elems) {
-        scrapbook.unwrapElement(elem);
+        scrapbook.unwrapNode(elem);
       }
     }
 

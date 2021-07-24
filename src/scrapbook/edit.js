@@ -26,15 +26,19 @@
     bookId: null,
     target: null,
 
+    enableUi(willEnable) {
+      document.getElementById('wrapper').disabled = !willEnable;
+    },
+
     async init() {
       try {
         const params = new URL(document.URL).searchParams;
         const id = this.id = params.get('id');
         const bookId = this.bookId = params.get('bookId');
         let file = params.get('file');
-        let checkMetaRefresh = !file;
+        let checkRedirect = !file;
 
-        await scrapbook.loadOptions();
+        await scrapbook.loadOptionsAuto;
         await server.init();
 
         const book = server.books[bookId];
@@ -57,14 +61,9 @@
         }
 
         try {
-          let target = this.target = book.dataUrl + scrapbook.escapeFilename(file);
-
-          if (checkMetaRefresh && target.endsWith('.html')) {
-            const redirectedTarget = await server.getMetaRefreshTarget(target);
-            if (redirectedTarget) {
-              target = this.target = scrapbook.splitUrlByAnchor(redirectedTarget)[0];
-            }
-          }
+          let target = this.target = checkRedirect ?
+            await book.getItemIndexUrl(item) : 
+            book.dataUrl + scrapbook.escapeFilename(file);
 
           const text = await server.request({
             url: target + '?a=source',
@@ -76,11 +75,9 @@
           throw new Error(`Unable to load specified file "${file}": ${ex.message}`);
         }
 
-        Array.prototype.forEach.call(
-          document.getElementById('toolbar').querySelectorAll(':disabled'),
-          (elem) => {
-            elem.disabled = false;
-          });
+        this.enableUi(true);
+
+        document.getElementById('editor').focus();
       } catch (ex) {
         console.error(ex);
         alert(`Error: ${ex.message}`);
@@ -89,13 +86,15 @@
 
     async save() {
       try {
+        this.enableUi(false);
+
         const {id, bookId} = this;
         const book = server.books[bookId];
 
         await book.transaction({
-          callback: async (book) => {
-            const refresh = !await book.validateTree();
-            const meta = await book.loadMeta(refresh);
+          mode: 'refresh',
+          callback: async (book, updated) => {
+            const meta = await book.loadMeta(updated);
 
             const item = meta[id];
             if (!item) {
@@ -143,15 +142,41 @@
       } catch (ex) {
         console.error(ex);
         alert(`Unable to save document: ${ex.message}`);
+      } finally {
+        this.enableUi(true);
+      }
+    },
+
+    async locate() {
+      try {
+        this.enableUi(false);
+        const response = await scrapbook.invokeExtensionScript({
+          cmd: "background.locateItem",
+          args: {url: this.target},
+        });
+        if (response === false) {
+          alert(scrapbook.lang("ErrorLocateSidebarNotOpened"));
+        } else if (response === null) {
+          alert(scrapbook.lang("ErrorLocateNotFound"));
+        }
+        return response;
+      } finally {
+        this.enableUi(true);
       }
     },
 
     async exit() {
-      if (this.target) {
-        location.assign(this.target);
-      } else {
-        const tab = await browser.tabs.getCurrent();
-        return browser.tabs.remove(tab.id);
+      try {
+        this.enableUi(false);
+
+        if (this.target) {
+          location.assign(this.target);
+        } else {
+          const tab = await browser.tabs.getCurrent();
+          return browser.tabs.remove(tab.id);
+        }
+      } finally {
+        this.enableUi(true);
       }
     },
   };
@@ -161,6 +186,9 @@
 
     document.getElementById('btn-save').addEventListener('click', (event) => {
        editor.save();
+    });
+    document.getElementById('btn-locate').addEventListener('click', (event) => {
+       editor.locate();
     });
     document.getElementById('btn-exit').addEventListener('click', (event) => {
        editor.exit();

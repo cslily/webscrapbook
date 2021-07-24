@@ -81,8 +81,10 @@
       allowDrag = false,
       allowDrop = false,
       allowCopy = false,
+      allowPaste = false,
       contextMenuCallback,
       keyDownCallback,
+      pasteCallback,
       itemAnchorClickCallback,
       itemDragOverCallback,
       itemDropCallback,
@@ -98,8 +100,10 @@
       this.allowDrag = allowDrag;
       this.allowDrop = allowDrop;
       this.allowCopy = allowCopy;
+      this.allowPaste = allowPaste;
       this.contextMenuCallback = contextMenuCallback;
       this.keyDownCallback = keyDownCallback;
+      this.pasteCallback = pasteCallback;
       this.itemAnchorClickCallback = itemAnchorClickCallback;
       this.itemDragOverCallback = itemDragOverCallback;
       this.itemDropCallback = itemDropCallback;
@@ -131,6 +135,14 @@
       } else {
         document.removeEventListener('copy', this.onCopy);
       }
+
+      // Binding event on this.treeElem does not work.
+      // Bind event on the document and check if the tree is active (focused) instead.
+      if (this.allowPaste) {
+        document.addEventListener('paste', this.onPaste);
+      } else {
+        document.removeEventListener('paste', this.onPaste);
+      }
     }
 
     rebuild() {
@@ -150,12 +162,22 @@
       );
     }
 
+    getParent(itemElem) {
+      return itemElem.parentNode.parentNode;
+    }
+
     getParentAndIndex(itemElem) {
       const parentItemElem = itemElem.parentNode.parentNode;
       const parentItemId = parentItemElem.getAttribute('data-id');
       const siblingItems = parentItemElem.container.children;
       const index = Array.prototype.indexOf.call(siblingItems, itemElem);
       return {parentItemElem, parentItemId, siblingItems, index};
+    }
+
+    getItemUrl(elem) {
+      const anchor = elem.anchor;
+      if (!anchor) { return ''; }
+      return anchor.href;
     }
 
     getXpathPos(elem) {
@@ -241,23 +263,38 @@
         if (this.allowKeyboardNavigation) {
           a.setAttribute('tabindex', -1);
         }
-        a.appendChild(document.createTextNode(meta.title || meta.id));
+        elem.label = a.appendChild(document.createTextNode(meta.title || meta.id));
         a.title = (meta.title || meta.id) + (meta.source ? '\n' + meta.source : '') + (meta.comment ? '\n\n' + meta.comment : '');
-        if (meta.type === 'bookmark') {
-          if (meta.source) {
-            a.href = meta.source;
-          } else {
-            if (meta.index) { a.href = this.book.dataUrl + scrapbook.escapeFilename(meta.index); }
+        switch (meta.type) {
+          case 'folder': {
+            const u = new URL(browser.runtime.getURL("scrapbook/folder.html"));
+            u.searchParams.append('id', meta.id);
+            u.searchParams.append('bookId', this.book.id);
+            a.href = u.href;
+            break;
           }
-        } else if (meta.type === 'postit') {
-          if (meta.index) {
+          case 'postit': {
             const u = new URL(browser.runtime.getURL("scrapbook/postit.html"));
             u.searchParams.append('id', meta.id);
             u.searchParams.append('bookId', this.book.id);
             a.href = u.href;
+            break;
           }
-        } else {
-          if (meta.index) { a.href = this.book.dataUrl + scrapbook.escapeFilename(meta.index); }
+          case 'bookmark': {
+            if (meta.source) {
+              a.href = meta.source;
+            } else if (meta.index) {
+              a.href = this.book.dataUrl + scrapbook.escapeFilename(meta.index);
+            }
+            break;
+          }
+          default: {
+            if (meta.index) {
+              a.href = this.book.dataUrl + scrapbook.escapeFilename(meta.index)
+                  + scrapbook.splitUrlByAnchor(meta.source || '')[1];
+            }
+            break;
+          }
         }
         if (meta.type === 'folder') {
           a.addEventListener('click', this.onItemFolderClick);
@@ -280,7 +317,11 @@
 
         var legend = line.appendChild(document.createElement('legend'));
         if (meta.title) {
-          legend.appendChild(document.createTextNode('\xA0' + meta.title + '\xA0'));
+          legend.appendChild(document.createTextNode('\xA0'));
+          elem.label = legend.appendChild(document.createTextNode(meta.title));
+          legend.appendChild(document.createTextNode('\xA0'));
+        } else {
+          elem.label = legend.appendChild(document.createTextNode(''));
         }
       }
     }
@@ -289,9 +330,9 @@
       if (this.anchorElem) {
         if (itemElem === this.anchorElem) { return; }
 
-        Array.prototype.forEach.call(this.treeElem.querySelectorAll('.anchor'), (elem) => {
+        for (const elem of this.treeElem.querySelectorAll('.anchor')) {
           elem.classList.remove('anchor');
-        });
+        }
       }
       if (!this.treeElem.contains(itemElem)) {
         return;
@@ -307,9 +348,9 @@
       if (!this.allowSelect) { return; }
 
       if (reselect) {
-        Array.prototype.forEach.call(this.treeElem.querySelectorAll('.highlight'), (elem) => {
+        for (const elem of this.treeElem.querySelectorAll('.highlight')) {
           elem.classList.remove('highlight');
-        });
+        }
       }
 
       if (!this.treeElem.contains(itemElem)) {
@@ -419,6 +460,74 @@
         return;
       }
 
+      if (event.code === "Home") {
+        event.preventDefault();
+        const itemElems = this.treeElem.querySelectorAll('li[data-id]');
+        const anchorElem = this.anchorElem;
+        if (!this.treeElem.contains(anchorElem) || anchorElem.closest('[hidden]')) {
+          this.highlightItem(itemElems[0], true);
+          return;
+        }
+
+        let target, index = 0;
+        while (index >= 0) {
+          if (itemElems[index] && !itemElems[index].closest('[hidden]')) {
+            target = itemElems[index];
+            break;
+          }
+          index--;
+        }
+
+        if (target) {
+          if (event.shiftKey && event.ctrlKey) {
+            this.highlightItem(target, true, {reselect: false, ranged: true});
+          } else if (event.shiftKey) {
+            this.highlightItem(target, true, {reselect: true, ranged: true});
+          } else if (event.ctrlKey) {
+            this.anchorItem(target);
+          } else {
+            this.highlightItem(target, true);
+          }
+          target.scrollIntoView();
+        }
+
+        return;
+      }
+
+      if (event.code === "End") {
+        event.preventDefault();
+        const itemElems = this.treeElem.querySelectorAll('li[data-id]');
+        const anchorElem = this.anchorElem;
+        if (!this.treeElem.contains(anchorElem) || anchorElem.closest('[hidden]')) {
+          this.highlightItem(itemElems[0], true);
+          return;
+        }
+
+        let target, index = itemElems.length - 1;
+        while (index >= 0) {
+          if (itemElems[index] && !itemElems[index].closest('[hidden]')) {
+            target = itemElems[index];
+            break;
+          }
+          index--;
+        }
+
+        if (target) {
+          if (event.shiftKey && event.ctrlKey) {
+            this.highlightItem(target, true, {reselect: false, ranged: true});
+          } else if (event.shiftKey) {
+            this.highlightItem(target, true, {reselect: true, ranged: true});
+          } else if (event.ctrlKey) {
+            this.anchorItem(target);
+          } else {
+            this.highlightItem(target, true);
+          }
+          target.scrollIntoView();
+        }
+
+        return;
+      }
+
       if (event.code === "Space") {
         event.preventDefault();
         const itemElems = this.treeElem.querySelectorAll('li[data-id]');
@@ -438,13 +547,12 @@
         }
 
         if (target) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(target, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(target, true, {reselect: true, ranged: true});
-          } else {
-            this.highlightItem(target, undefined, {reselect: false});
-          }
+          const willHighlight = event.shiftKey ? true : undefined;
+          const reselect = event.ctrlKey ? !this.allowMultiSelect :
+              event.shiftKey ? true :
+              !(this.allowMultiSelect && this.allowMultiSelectOnClick);
+          const ranged = this.allowMultiSelect && event.shiftKey;
+          this.highlightItem(target, willHighlight, {reselect, ranged});
           target.scrollIntoView();
         }
 
@@ -545,6 +653,36 @@
       );
     }
 
+    onPaste(event) {
+      // skip if the tree is not focused
+      if (!this.treeElem.contains(document.activeElement)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      // calculate position
+      let targetId;
+      let targetIndex;
+      if (this.treeElem.contains(this.anchorElem) && !this.anchorElem.closest('[hidden]')) {
+        const {parentItemId, index} = this.getParentAndIndex(this.anchorElem);
+        targetId = parentItemId;
+        targetIndex = index + 1;
+      } else {
+        targetId = this.rootId;
+        targetIndex = Infinity;
+      }
+
+      // invoke callback
+      if (this.pasteCallback) {
+        this.pasteCallback.call(this, event, {
+          tree: this,
+          targetId,
+          targetIndex,
+        });
+      }
+    }
+
     onItemDragStart(event) {
       const itemElem = event.currentTarget.parentNode;
       if (!itemElem.controller.classList.contains('highlight')) {
@@ -553,9 +691,9 @@
 
       const selectedItemElems = this.getSelectedItemElems();
 
-      Array.prototype.forEach.call(selectedItemElems, (elem) => {
+      for (const elem of selectedItemElems) {
         elem.classList.add('dragged');
-      });
+      }
 
       // Firefox requires at least one data to get dragging work
       event.dataTransfer.setData(
@@ -594,9 +732,9 @@
     onItemDragEnd(event) {
       if (!this.lastDraggedElems) { return; }
 
-      Array.prototype.forEach.call(this.lastDraggedElems, (elem) => {
+      for (const elem of this.lastDraggedElems) {
         elem.classList.remove('dragged');
-      });
+      }
       this.lastDraggedElems = null;
     }
 
@@ -706,7 +844,6 @@
       } else {
         // within
         targetId = itemElem.getAttribute('data-id');
-        targetIndex = Infinity;
       }
 
       // invoke callback
@@ -728,10 +865,9 @@
     onItemClick(event) {
       const itemElem = event.currentTarget.parentNode;
       const willHighlight = event.shiftKey ? true : undefined;
-      const reselect = event.ctrlKey ? false :
+      const reselect = event.ctrlKey ? !this.allowMultiSelect :
           event.shiftKey ? true :
-          (this.allowMultiSelect && this.allowMultiSelectOnClick) ? false :
-          true;
+          !(this.allowMultiSelect && this.allowMultiSelectOnClick);
       const ranged = this.allowMultiSelect && event.shiftKey;
       this.highlightItem(itemElem, willHighlight, {reselect, ranged});
     }

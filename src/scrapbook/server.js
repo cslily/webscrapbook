@@ -26,6 +26,8 @@
   // this should correspond with the lock stale time in the backend server
   const LOCK_STALE_TIME = 60 * 1000;
 
+  const TRANSCATION_BACKUP_TREE_FILES_REGEX = /^(meta|toc)\d*\.js$/i;
+
   const TEMPLATE_DIR = '/templates/';
   const TEMPLATES = {
     'html': {
@@ -46,6 +48,16 @@
       content: `%NOTE_TITLE%`,
     },
   };
+
+  const REGEX_ITEM_POSTIT = new RegExp('^[\\S\\s]*?<pre>\\n?([^<]*(?:<(?!/pre>)[^<]*)*)\\n</pre>[\\S\\s]*$');
+  const ITEM_POSTIT_FORMATTER = `\
+<!DOCTYPE html><html><head>\
+<meta charset="UTF-8">\
+<meta name="viewport" content="width=device-width">\
+<style>pre { white-space: pre-wrap; overflow-wrap: break-word; }</style>\
+</head><body><pre>
+%POSTIT_CONTENT%
+</pre></body></html>`;
 
   class RequestError extends Error {
     constructor(message, response) {
@@ -105,18 +117,16 @@
      * @param {boolean} [params.csrfToken]
      * @param {string} [params.format]
      */
-    async request(params = {}) {
-      let {
-        url,
-        method,
-        headers,
-        body,
-        credentials = 'include',
-        cache = 'no-cache',
-        csrfToken = false,
-        format,
-      } = params;
-
+    async request({
+      url,
+      method,
+      headers,
+      body,
+      credentials = 'include',
+      cache = 'no-cache',
+      csrfToken = false,
+      format,
+    }) {
       if (!method) {
         method = (body || csrfToken) ? 'POST' : 'GET';
       }
@@ -220,16 +230,14 @@
      * @param {boolean} [params.csrfToken]
      * @param {Function} [params.onMessage]
      */
-    async requestSse(params = {}) {
-      let {
-        url = this.serverRoot,
-        query,
-        credentials = 'include',
-        cache = 'no-cache',
-        csrfToken = true,
-        onMessage,
-      } = params;
-
+    async requestSse({
+      url = this.serverRoot,
+      query,
+      credentials = 'include',
+      cache = 'no-cache',
+      csrfToken = true,
+      onMessage,
+    } = {}) {
       if (!(url instanceof URL)) {
         url = new URL(url);
       }
@@ -288,10 +296,12 @@
 
     /**
      * Load the config of the backend server
+     *
+     * @return {boolean} whether server config is changed
      */
     async init(refresh = false) {
       if (this._config && !refresh) {
-        return;
+        return false;
       }
 
       if (!scrapbook.hasServer()) {
@@ -299,9 +309,16 @@
       }
 
       // record configs
+      this._bookId = (await scrapbook.cache.get({table: "scrapbookServer", key: "currentScrapbook"}, 'storage')) || "";
+
+      // Take user and password only when both are non-empty;
+      // otherwise omit both fields for the browser to try cached
+      // auth credentials.
       this._user = scrapbook.getOption("server.user");
       this._password = scrapbook.getOption("server.password");
-      this._bookId = (await scrapbook.cache.get({table: "scrapbookServer", key: "currentScrapbook"}, 'storage')) || "";
+      if (!(this._user && this._password)) {
+        this._user = this._password = null;
+      }
 
       // load config from server
       {
@@ -328,7 +345,7 @@
               Accept: 'application/json, */*;q=0.1',
             },
             method: "GET",
-            onload: true,
+            allowAnyStatus: true,
           });
         } catch (ex) {
           throw new RequestError('Unable to connect to backend server.', {url});
@@ -357,7 +374,7 @@
         if (this._config &&
             this._serverRoot === serverRoot &&
             JSON.stringify(this._config) === JSON.stringify(config)) {
-          return;
+          return false;
         }
 
         this._serverRoot = serverRoot;
@@ -394,6 +411,8 @@
           this._books[bookId] = new Book(bookId, this);
         }
       }
+
+      return true;
     }
 
     /**
@@ -620,8 +639,10 @@
       return this.fulltext = await this.loadTreeFile('fulltext');
     }
 
-    async lockTree(params = {}) {
-      const {id, timeout = 5} = params;
+    async lockTree({
+      id,
+      timeout = 5,
+    } = {}) {
       const json = await this.server.request({
         url: this.topUrl + '?a=lock',
         method: "POST",
@@ -636,8 +657,7 @@
       return json.data;
     }
 
-    async unlockTree(params = {}) {
-      const {id} = params;
+    async unlockTree({id} = {}) {
       await this.server.request({
         url: this.topUrl + '?a=unlock',
         method: "POST",
@@ -791,8 +811,15 @@
       }
     }
 
+
     /**
-     * A high-level wrapper for common request series.
+     * @callback transactionCallback
+     * @param {Book} book - the Book the transaction is performed on.
+     * @param {boolean} [updated] - whether the server tree has been updated.
+     */
+
+    /**
+     * A high-level wrapper for common tree-releated request series.
      *
      * - Acquire a lock.
      * - Do a series of requests.
@@ -802,22 +829,30 @@
      * NOTE: this is NOT a true transaction, which supports atomic and rollback.
      *
      * @param {Object} params
-     * @param {Function} params.callback - the callback function for requests
-     *     to perform.
+     * @param {transactionCallback} params.callback - the callback function to
+     *     peform the tasks.
      * @param {integer} [params.timeout] - timeout for lock.
      * @param {string} [params.mode] - mode for the transaction:
-     *     - "validate": validate tree before the request and fail out if
-     *       remote tree has been updated.
+     *     - "validate": validate the tree before the request and fail out if
+     *       the remote tree has been updated.
+     *     - "refresh": refresh the tree before the request and pass an extra
+     *        param about whether the remote tree has been updated.
+     * @param {boolean} [params.autoBackup] - whether to automatically create a
+     *     temporary tree backup before a transaction and remove after success.
      */
-    async transaction(params = {}) {
-      const {
-          callback,
-          mode,
-          timeout = 5,
-        } = params;
+    async transaction({
+      callback,
+      mode,
+      autoBackup = scrapbook.getOption("scrapbook.transactionAutoBackup"),
+      timeout = 5,
+    }) {
       let lockId;
       let keeper;
+      let updated;
+      let backupTs;
+      let backupNote = 'transaction';
 
+      // lock the tree
       try {
         lockId = await this.lockTree({timeout});
       } catch (ex) {
@@ -836,7 +871,7 @@
           await this.lockTree({id: lockId, timeout: refreshAcquireTimeout});
         }, refreshInterval);
 
-        // request
+        // handle requested settings
         switch (mode) {
           case 'validate': {
             if (!await this.validateTree()) {
@@ -844,10 +879,54 @@
             }
             break;
           }
+          case 'refresh': {
+            updated = !await this.validateTree();
+            break;
+          }
         }
-        await callback.call(this, this);
+
+        // auto backup
+        if (autoBackup) {
+          backupTs = scrapbook.dateToId();
+
+          // Load tree files if not done yet.
+          if (!this.treeFiles) {
+            await this.loadTreeFiles();
+          }
+
+          for (const [filename] of this.treeFiles) {
+            if (TRANSCATION_BACKUP_TREE_FILES_REGEX.test(filename)) {
+              await this.server.request({
+                url: this.treeUrl + filename + `?a=backup&ts=${backupTs}&note=${backupNote}`,
+                method: "POST",
+                format: 'json',
+                csrfToken: true,
+              });
+            }
+          }
+        }
+
+        // run the callback
+        await callback.call(this, this, updated);
+
+        // clear auto backup if transaction successful
+        if (backupTs) {
+          try {
+            await this.server.request({
+              url: this.treeUrl + `?a=unbackup&ts=${backupTs}&note=${backupNote}`,
+              method: "POST",
+              format: 'json',
+              csrfToken: true,
+            });
+          } catch (ex) {
+            console.error(ex);
+          }
+        }
       } finally {
+        // clear keeper
         clearInterval(keeper);
+
+        // unlock the tree
         try {
           await this.unlockTree({id: lockId});
         } catch (ex) {
@@ -885,18 +964,16 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      * Add (or replace) an item to the Book.
      *
      * @param {Object} params
-     * @param {Objet|null} params.item - null to generate a default item. Overwrites existed id.
-     * @param {string|null} params.parentId - null to not add to any parent
+     * @param {?Object} params.item - null to generate a default item. Overwrites existed id.
+     * @param {?string} params.parentId - null to not add to any parent
      * @param {integer} params.index - Infinity to insert to last
      * @return {Object}
      */
-    addItem(params) {
-      let {
-        item,
-        parentId = 'root',
-        index = Infinity,
-      } = params;
-
+    addItem({
+      item,
+      parentId = 'root',
+      index = Infinity,
+    }) {
       // generate a cloned item, with keys sorted in a predefined order
       item = Object.assign(this.defaultMeta, item);
 
@@ -934,18 +1011,16 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.parentId - null to not removed from certain parent
+     * @param {?string} params.parentId - null to not removed from certain parent
      *         (useful for checking stale items)
      * @param {integer} params.index
      * @return {Set} a set of removed items
      */
-    removeItemTree(params) {
-      let {
-        id,
-        parentId,
-        index,
-      } = params;
-
+    removeItemTree({
+      id,
+      parentId,
+      index,
+    }) {
       // reachable items
       const allItems = new Set();
       this.getReachableItems('root', allItems);
@@ -990,22 +1065,20 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.currentParentId - null to not removed from certain parent
+     * @param {?string} params.currentParentId - null to not removed from certain parent
      *         (useful for checking stale items)
      * @param {integer} params.currentIndex
      * @param {string} [params.targetParentId] - ID of the recycle bin item
      * @param {integer} [params.targetIndex] - Infinity to insert to last
      * @return {integer} the real insertion index
      */
-    recycleItemTree(params) {
-      let {
-        id,
-        currentParentId,
-        currentIndex,
-        targetParentId = 'recycle',
-        targetIndex = Infinity,
-      } = params;
-
+    recycleItemTree({
+      id,
+      currentParentId,
+      currentIndex,
+      targetParentId = 'recycle',
+      targetIndex = Infinity,
+    }) {
       // remove from parent TOC
       if (currentParentId && this.toc[currentParentId]) {
         this.toc[currentParentId].splice(currentIndex, 1);
@@ -1044,21 +1117,19 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      *
      * @param {Object} params
      * @param {string} params.id
-     * @param {string|null} params.currentParentId - null if none
+     * @param {?string} params.currentParentId - null if none
      * @param {integer} params.currentIndex
      * @param {integer} params.targetParentId
      * @param {integer} [params.targetIndex] - Infinity to insert to last
      * @return {integer} the real insertion index
      */
-    moveItem(params) {
-      let {
-        id,
-        currentParentId,
-        currentIndex,
-        targetParentId,
-        targetIndex = Infinity,
-      } = params;
-
+    moveItem({
+      id,
+      currentParentId,
+      currentIndex,
+      targetParentId,
+      targetIndex = Infinity,
+    }) {
       // fix when moving within the same parent
       // -1 as the current item will be removed from the original position
       if (currentParentId === targetParentId && targetIndex > currentIndex) {
@@ -1105,6 +1176,39 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
       };
       _addDecendingItems(id);
       return set;
+    }
+
+    /**
+     * Get URL of the real index file of an item.
+     *
+     * - Consider redirection of HTZ or MAFF.
+     * - Consider meta refresh of index.html.
+     */
+    async getItemIndexUrl(item, {
+      checkArchiveRedirect = true,
+      checkMetaRefresh = true,
+    } = {}) {
+      const index = item.index;
+      if (!index) { return; }
+
+      let target = this.dataUrl + scrapbook.escapeFilename(index);
+
+      if (checkArchiveRedirect) {
+        const response = await this.server.request({
+          url: target,
+          method: "HEAD",
+        });
+        target = response.url;
+      }
+
+      if (checkMetaRefresh && target.endsWith('/index.html')) {
+        const redirectedTarget = await this.server.getMetaRefreshTarget(target);
+        if (redirectedTarget) {
+          target = redirectedTarget;
+        }
+      }
+
+      return target;
     }
 
     /**
@@ -1245,6 +1349,89 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
       });
     }
 
+    async loadPostit(item) {
+      const target = await this.getItemIndexUrl(item);
+      let text = await server.request({
+        url: target + '?a=source',
+        method: "GET",
+      }).then(r => r.text());
+      text = text.replace(/\r\n?/g, '\n');
+      text = text.replace(REGEX_ITEM_POSTIT, '$1');
+      return scrapbook.unescapeHtml(text);
+    }
+
+    async savePostit(id, text) {
+      let item;
+      let errors = [];
+      await this.transaction({
+        mode: 'refresh',
+        callback: async (book, updated) => {
+          const meta = await book.loadMeta(updated);
+
+          item = meta[id];
+          if (!item) {
+            throw new Error(`Specified item "${id}" does not exist.`);
+          }
+
+          // upload text content
+          const title = text.replace(/\n[\s\S]*$/, '');
+          const content = ITEM_POSTIT_FORMATTER.replace(/%(\w*)%/gu, (_, key) => {
+            let value;
+            switch (key) {
+              case '':
+                value = '%';
+                break;
+              case 'POSTIT_CONTENT':
+                value = text;
+                break;
+            }
+            return value ? scrapbook.escapeHtml(value) : '';
+          });
+
+          const target = await this.getItemIndexUrl(item);
+          await this.server.request({
+            url: target + '?a=save',
+            method: "POST",
+            format: 'json',
+            csrfToken: true,
+            body: {
+              text: scrapbook.unicodeToUtf8(content),
+            },
+          });
+
+          // update item
+          item.title = title;
+          item.modify = scrapbook.dateToId();
+          await book.saveMeta();
+
+          if (scrapbook.getOption("indexer.fulltextCache")) {
+            await this.server.requestSse({
+              query: {
+                "a": "cache",
+                "book": book.id,
+                "item": item.id,
+                "fulltext": 1,
+                "inclusive_frames": scrapbook.getOption("indexer.fulltextCacheFrameAsPageContent"),
+                "no_lock": 1,
+                "no_backup": 1,
+              },
+              onMessage(info) {
+                if (['error', 'critical'].includes(info.type)) {
+                  errors.push(`Error when updating fulltext cache: ${info.msg}`);
+                }
+              },
+            });
+          }
+
+          await book.loadTreeFiles(true);  // update treeLastModified
+        },
+      });
+      return {
+        title: item.title,
+        errors,
+      };
+    }
+
     /**
      * Cache a favicon.
      *
@@ -1253,9 +1440,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      * @param {string} params.icon - icon URL to cache
      * @return {Promise<string>} the new icon URL
      */
-    async cacheFavIcon(params) {
-      const {book, item, icon} = params;
-
+    async cacheFavIcon({book, item, icon}) {
       const getShaFile = (data) => {
         if (!data) { throw new Error(`Unable to fetch a file for this favicon URL.`); }
 

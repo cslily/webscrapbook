@@ -23,12 +23,14 @@
 
   'use strict';
 
+  const customDataMap = new WeakMap();
+
   const sidebar = {
     tree: null,
     treeElem: null,
     bookId: null,
     book: null,
-    rootId: 'root',
+    rootId: null,
     mode: 'normal',
     sidebarWindowId: null,
 
@@ -68,10 +70,10 @@
 
       document.getElementById('upload-file-selector').addEventListener('change', this.onClickFileSelector);
 
-      window.addEventListener('command', this.onCommandRun);
+      window.addEventListener('customCommand', this.onCustomCommandRun);
 
       // load config
-      await scrapbook.loadOptions();
+      await scrapbook.loadOptionsAuto;
 
       if (!scrapbook.hasServer()) {
         this.error(scrapbook.lang('ScrapBookErrorServerNotConfigured'));
@@ -84,44 +86,24 @@
       } catch (ex) {
         console.error(ex);
         this.error(scrapbook.lang('ScrapBookErrorServerInit', [ex.message]));
+
+        // For authentication failure, show alternative login link if user and
+        // password not configured.
+        if (ex.status === 401 && (server._user === null || server._password === null)) {
+          const a = document.createElement('a');
+          a.href = location.href;
+          a.target = 'login';
+          a.textContent = scrapbook.lang('WarnSidebarLoginPromptMissing');
+          this.error(a);
+        }
+
         return;
       }
 
       // load URL params
       const urlParams = new URL(document.URL).searchParams;
-      this.rootId = urlParams.get('root') || this.rootId;
-
-      // load current scrapbook and scrapbooks list
-      try {
-        let bookId = this.bookId = urlParams.has('id') ? urlParams.get('id') : server.bookId;
-        let book = this.book = server.books[bookId];
-
-        if (!book) {
-          this.warn(scrapbook.lang('ScrapBookErrorBookNotExist', [bookId]));
-          bookId = this.bookId = '';
-          book = this.book = server.books[bookId];
-          await scrapbook.cache.set({table: "scrapbookServer", key: "currentScrapbook"}, bookId, 'storage');
-        }
-
-        // init book select
-        if (this.mode === 'normal') {
-          const wrapper = document.getElementById('book');
-          wrapper.hidden = false;
-
-          for (const key of Object.keys(server.books).sort()) {
-            const book = server.books[key];
-            const opt = document.createElement('option');
-            opt.value = book.id;
-            opt.textContent = book.name;
-            wrapper.appendChild(opt);
-          }
-          wrapper.value = bookId;
-        }
-      } catch (ex) {
-        console.error(ex);
-        this.error(scrapbook.lang('ScrapBookErrorLoadBooks', [ex.message]));
-        return;
-      }
+      const bookId = urlParams.has('id') ? urlParams.get('id') : server.bookId;
+      const rootId = urlParams.get('root') || 'root';
 
       // init tree instance
       this.treeElem = document.getElementById('items');
@@ -130,26 +112,67 @@
         cacheType: this.mode === 'normal' ? 'storage' : 'sessionStorage',
       });
 
-      await this.refresh(undefined, undefined, true);
+      await this.refresh(bookId, rootId, true);
     },
 
     /**
      * Update UI to match the given bookId and rootId.
      */
-    async refresh(bookId, rootId, keepLogs = false) {
+    async refresh(bookId, rootId, initial = false) {
       // save current active element
       const activeElement = document.activeElement;
 
       this.enableUi(false);
 
+      // clear logs
+      if (!initial) {
+        document.getElementById('logger').textContent = '';
+      }
+
       try {
-        // update bookId and rootId
+        // update bookId
         if (typeof bookId === 'string' && bookId !== this.bookId) {
-          await scrapbook.cache.set({table: "scrapbookServer", key: "currentScrapbook"}, bookId, 'storage');
+          let requireUpdateBooks = true;
+
+          if (!initial) {
+            await scrapbook.cache.set({table: "scrapbookServer", key: "currentScrapbook"}, bookId, 'storage');
+
+            await this.savePostit();
+            await this.uneditPostit();
+
+            // reload server config in case there has been a change
+            requireUpdateBooks = await server.init(true);
+          }
+
+          // update current book
           this.bookId = bookId;
           this.book = server.books[bookId];
+
+          if (!this.book) {
+            this.warn(scrapbook.lang('ScrapBookErrorBookNotExist', [bookId]));
+            bookId = this.bookId = '';
+            this.book = server.books[bookId];
+            await scrapbook.cache.set({table: "scrapbookServer", key: "currentScrapbook"}, bookId, 'storage');
+          }
+
+          // update book selector
+          if (this.mode === 'normal' && requireUpdateBooks) {
+            const wrapper = document.getElementById('book');
+            wrapper.textContent = '';
+            for (const bookId of Object.keys(server.books).sort()) {
+              const book = server.books[bookId];
+              const opt = wrapper.appendChild(document.createElement('option'));
+              opt.value = book.id;
+              opt.textContent = book.name;
+            }
+            wrapper.value = bookId;
+            wrapper.hidden = false;
+          }
+
           document.getElementById('book').value = bookId;
         }
+
+        // update rootId
         if (typeof rootId === 'string' && rootId !== this.rootId) {
           this.rootId = rootId;
         }
@@ -212,11 +235,8 @@
           menuElem.querySelector('button[value="delete"]').disabled = !(!isNoTree && isRecycle);
 
           menuElem.querySelector('button[value="recapture"]').disabled = !(!isNoTree && !isRecycle);
+          menuElem.querySelector('button[value="copyinfo"]').disabled = isNoTree;
           menuElem.querySelector('button[value="meta"]').disabled = isNoTree;
-        }
-
-        if (!keepLogs) {
-          document.getElementById('logger').textContent = '';
         }
 
         // refresh book tree
@@ -229,6 +249,8 @@
           if (!this.book.meta[rootId] && !this.book.isSpecialItem(rootId)) {
             throw new Error(`specified root item "${rootId}" does not exist.`);
           }
+        } else {
+          this.log(scrapbook.lang('ScrapBookNoTree'));
         }
 
         this.tree.init({
@@ -243,7 +265,9 @@
           allowDrag: true,
           allowDrop: true,
           allowCopy: true,
+          allowPaste: true,
           contextMenuCallback: this.onTreeContextMenu,
+          pasteCallback: this.onTreePaste,
           itemAnchorClickCallback: this.onTreeItemAnchorClick,
           itemDragOverCallback: this.onTreeItemDragOver,
           itemDropCallback: this.onTreeItemDrop,
@@ -362,7 +386,7 @@
 
         // execute command
         event.preventDefault();
-        const evt = new CustomEvent("command", {
+        const evt = new CustomEvent("customCommand", {
           detail: {
             command,
             itemElems: this.tree.getSelectedItemElems(),
@@ -379,10 +403,11 @@
 
     onSearchButtonClick(event) {
       event.preventDefault();
+      const newTab = event.shiftKey || event.ctrlKey || scrapbook.getOption("scrapbook.sidebarSearchInNewTab");
       const url = new URL(browser.runtime.getURL(`scrapbook/search.html`));
       url.searchParams.set('id', this.bookId);
       if (this.rootId !== 'root') { url.searchParams.set('root', this.rootId); }
-      this.openLink(url.href, "search");
+      this.openLink(url.href, newTab);
     },
 
     onRefreshButtonClick(event) {
@@ -409,21 +434,27 @@
       this.showBookCommands(false);
 
       const command = event.target.value;
+      const {ctrlKey, shiftKey, altKey, metaKey} = event;
+      const modifiers = {ctrlKey, shiftKey, altKey, metaKey};
 
       switch (command) {
         case 'upload': {
           const elem = document.getElementById('upload-file-selector');
-          elem.removeAttribute('data-item-elem');
+          customDataMap.set(elem, {
+            items: false,
+            modifiers,
+          });
           elem.value = '';
           elem.click();
           break;
         }
 
         default: {
-          const evt = new CustomEvent("command", {
+          const evt = new CustomEvent("customCommand", {
             detail: {
               command,
               itemElems: [],
+              modifiers,
             },
           });
           window.dispatchEvent(evt);
@@ -446,21 +477,27 @@
       this.showCommands(false);
 
       const command = event.target.value;
+      const {ctrlKey, shiftKey, altKey, metaKey} = event;
+      const modifiers = {ctrlKey, shiftKey, altKey, metaKey};
 
       switch (command) {
         case 'upload': {
           const elem = document.getElementById('upload-file-selector');
-          elem.setAttribute('data-item-elem', '');
+          customDataMap.set(elem, {
+            items: true,
+            modifiers,
+          });
           elem.value = '';
           elem.click();
           break;
         }
 
         default: {
-          const evt = new CustomEvent("command", {
+          const evt = new CustomEvent("customCommand", {
             detail: {
               command,
               itemElems: this.tree.getSelectedItemElems(),
+              modifiers,
             },
           });
           window.dispatchEvent(evt);
@@ -483,7 +520,7 @@
      * @param {(HTMLElement)[]} [event.detail.itemElems] - selected item elements
      * @param {File[]} [event.detail.files] - files being uploaded
      */
-    async onCommandRun(event) {
+    async onCustomCommandRun(event) {
       const detail = event.detail;
 
       this.enableUi(false);
@@ -505,11 +542,13 @@
 
     onClickFileSelector(event) {
       event.preventDefault();
-      const evt = new CustomEvent("command", {
+      const detail = customDataMap.get(document.getElementById('upload-file-selector'));
+      const evt = new CustomEvent("customCommand", {
         detail: {
           command: 'upload',
-          itemElems: event.target.hasAttribute('data-item-elem') ? this.tree.getSelectedItemElems() : null,
+          itemElems: detail.items ? this.tree.getSelectedItemElems() : [],
           files: event.target.files,
+          modifiers: detail.modifiers,
         },
       });
       window.dispatchEvent(evt);
@@ -534,7 +573,6 @@
       return await this.onTreeItemDrop(event, {
         lastDraggedElems: this.tree.lastDraggedElems,
         targetId: this.rootId,
-        targetIndex: Infinity,
         isOnItem: false,
       });
     },
@@ -549,17 +587,65 @@
       this.showCommands(true, event);
     },
 
+    async onTreePaste(event, {
+      targetId,
+      targetIndex,
+    }) {
+      // disallow when commands disabled
+      if (document.querySelector('#command:disabled')) {
+        return;
+      }
+
+      if (event.clipboardData.types.includes('application/scrapbook.items+json')) {
+        const data = JSON.parse(event.clipboardData.getData('application/scrapbook.items+json'));
+        if (!data.items) {
+          return;
+        }
+
+        this.enableUi(false);
+
+        try {
+          if (this.rootId !== 'recycle') {
+            await this.copyItems(data, targetId, targetIndex);
+          }
+        } catch (ex) {
+          console.error(ex);
+          this.error(ex.message);
+          // when any error happens, the UI is possibility in an inconsistent status.
+          // lock the UI to avoid further manipulation and damage.
+          return;
+        }
+
+        this.enableUi(true);
+        return;
+      }
+    },
+
     async onTreeItemAnchorClick(event, {
       tree,
     }) {
-      if (browser.windows) {
-        // for desktop browsers, open link in the same tab of the main window
-        event.preventDefault();
-        await this.openLink(event.currentTarget.href);
-      } else {
-        // for Firefox Android (browser.windows not supported)
-        // use default action to open in the "webscrapbook" tab
+      const anchorElem = event.currentTarget;
+      const itemElem = anchorElem.parentNode.parentNode;
+
+      event.preventDefault();
+
+      // special handling for postit
+      if (itemElem.getAttribute('data-type') === 'postit') {
+        if (scrapbook.getOption("scrapbook.sidebarEditPostitInNewTab")) {
+          await this.openLink(anchorElem.href, true);
+        } else {
+          await this.editPostit(itemElem.getAttribute('data-id'));
+        }
+        return;
       }
+
+      // special handling for note
+      if (itemElem.getAttribute('data-type') === 'note') {
+        await this.openLink(anchorElem.href, scrapbook.getOption("scrapbook.sidebarEditNoteInNewTab"));
+        return;
+      }
+
+      await this.openLink(anchorElem.href, scrapbook.getOption("scrapbook.sidebarOpenInNewTab"));
     },
 
     onTreeItemDragOver(event, {
@@ -878,20 +964,25 @@
       }
       if (!item) { return null; }
 
-      let rootId = this.rootId;
-      let paths = book.findItemPaths(item.id, this.rootId);
-      if (!paths.length) {
-        // attempt to search under other special root ID
-        for (rootId of book.specialItems) {
-          if (rootId === this.rootId) { continue; }
-          paths = book.findItemPaths(item.id, rootId);
-          if (paths.length) { break; }
-        }
+      const rootIds = (bookId === this.bookId) ?
+        (function* () {
+          yield this.rootId;
+          for (const id of book.specialItems) {
+            if (id === this.rootId) { continue; }
+            yield id;
+          }
+        }).call(this) :
+        book.specialItems;
+      let rootId;
+      let paths;
+      for (rootId of rootIds) {
+        paths = book.findItemPaths(item.id, rootId);
+        if (paths.length) { break; }
+      }
 
-        // return if still not found
-        if (!paths.length) {
-          return null;
-        }
+      // return if not found
+      if (!paths.length) {
+        return null;
       }
 
       // switch if bookId or rootId is not current
@@ -899,27 +990,28 @@
         await this.refresh(bookId, rootId);
       }
 
-      if (this.tree.locate(item.id, paths)) {
-        return item;
-      }
+      this.tree.locate(item.id, paths);
+
+      return true;
     },
 
-    log(msg) {
-      document.getElementById("logger").appendChild(document.createTextNode(msg + '\n'));
+    log(msg, type = 'log') {
+      const div = document.createElement("div");
+      div.classList.add(type);
+      if (typeof msg === 'string') {
+        div.textContent = msg;
+      } else {
+        div.appendChild(msg);
+      }
+      document.getElementById("logger").appendChild(div);
     },
 
     warn(msg) {
-      const span = document.createElement('span');
-      span.className = 'warn';
-      span.appendChild(document.createTextNode(msg + '\n'));
-      document.getElementById("logger").appendChild(span);
+      this.log(msg, 'warn');
     },
 
     error(msg) {
-      const span = document.createElement('span');
-      span.className = 'error';
-      span.appendChild(document.createTextNode(msg + '\n'));
-      document.getElementById("logger").appendChild(span);
+      this.log(msg, 'error');
     },
 
     enableUi(willEnable) {
@@ -1027,6 +1119,7 @@
           menuElem.querySelector('button[value="delete"]').hidden = true;
 
           menuElem.querySelector('button[value="recapture"]').hidden = true;
+          menuElem.querySelector('button[value="copyinfo"]').hidden = true;
           menuElem.querySelector('button[value="meta"]').hidden = true;
           break;
         }
@@ -1036,7 +1129,7 @@
 
           menuElem.querySelector('button[value="opentab"]').hidden = ['folder', 'separator'].includes(item.type);
           menuElem.querySelector('button[value="view_text"]').hidden = !(item.type === 'file' && item.index);
-          menuElem.querySelector('button[value="exec"]').hidden = !(item.type === 'file' && item.index);
+          menuElem.querySelector('button[value="exec"]').hidden = !(item.type === 'file' && item.index && !/\.(?:htz|maff)$/i.test(item.index));
           menuElem.querySelector('button[value="browse"]').hidden = !(item.index);
           menuElem.querySelector('button[value="source"]').hidden = !(item.source);
           menuElem.querySelector('button[value="manage"]').hidden = !(!isRecycle && (item.type === 'folder' || this.book.toc[item.id]));
@@ -1059,6 +1152,7 @@
           menuElem.querySelector('button[value="delete"]').hidden = !(isRecycle);
 
           menuElem.querySelector('button[value="recapture"]').hidden = !(!isRecycle && ['', 'site', 'file', 'image', 'bookmark'].includes(item.type) && item.source);
+          menuElem.querySelector('button[value="copyinfo"]').hidden = false;
           menuElem.querySelector('button[value="meta"]').hidden = false;
           break;
         }
@@ -1089,6 +1183,7 @@
           menuElem.querySelector('button[value="delete"]').hidden = !(isRecycle);
 
           menuElem.querySelector('button[value="recapture"]').hidden = !(!isRecycle);
+          menuElem.querySelector('button[value="copyinfo"]').hidden = false;
           menuElem.querySelector('button[value="meta"]').hidden = true;
           break;
         }
@@ -1215,89 +1310,17 @@
       }
     },
 
-    async openLink(url, newTab) {
-      if (newTab) {
-        if (typeof newTab === 'string') {
-          window.open(url, newTab);
-          return;
-        }
-
-        // If current window is not normal, create tab in the last focused
-        // window.
-        //
-        // Firefox < 60 (?) allows multiple tabs in a popup window, but the
-        // user cannot switch between them.
-        //
-        // Chromium allows only one tab in a popup window. Although
-        // tabs.create without windowId creates a new tab in the last focused
-        // window, some Chromium forks has an inconsistent behavior (e.g.
-        // Vivaldi creates the tab in the current window, overwriting the
-        // current tab).
-        if (browser.windows && (await browser.windows.getCurrent()).type !== 'normal') {
-          const win = await scrapbook.invokeExtensionScript({
-            cmd: "background.getLastFocusedWindow",
-            args: {populate: true, windowTypes: ['normal']},
-          });
-          if (!win) {
-            await browser.windows.create({
-              url,
-            });
-            return;
-          }
-
-          await browser.tabs.create({
-            windowId: win.id,
-            url,
-          });
-          return;
-        }
-
-        // Otherwise, create tab in the current window.
-        const tab = await browser.tabs.create({
-          url,
-        });
-
-        return;
+    async openLink(url, newTab = false, singleton = false) {
+      // prevent open in self tab if window not supported
+      if (!browser.windows) {
+        newTab = true;
       }
 
-      if (browser.windows) {
-        const win = await scrapbook.invokeExtensionScript({
-          cmd: "background.getLastFocusedWindow",
-          args: {populate: true, windowTypes: ['normal']},
-        });
-        if (!win) {
-          await browser.windows.create({
-            url,
-          });
-          return;
-        }
-
-        const targetTab = win.tabs.filter(x => x.active)[0];
-        if (!targetTab) {
-          await browser.tabs.create({
-            windowId: win.id,
-            url,
-          });
-          return;
-        }
-
-        await browser.tabs.update(targetTab.id, {
-          url,
-        });
-
-        return;
-      }
-
-      const activeTab = (await browser.tabs.query({active: true}))[0];
-      if (!activeTab || activeTab.id === (await browser.tabs.getCurrent()).id) {
-        await browser.tabs.create({
-          url,
-        });
-        return;
-      }
-
-      await browser.tabs.update(activeTab.id, {
+      return await scrapbook.visitLink({
         url,
+        newTab,
+        singleton,
+        inNormalWindow: true,
       });
     },
 
@@ -1614,37 +1637,29 @@
         await book.loadTreeFiles(true);  // update treeLastModified
       };
 
-      if (sourceBook !== targetBook) {
-        await sourceBook.transaction({
-          mode: 'validate',
-          callback: async (book) => {
-            // validate if the dragging source is up to date
-            if (treeLastModified !== book.treeLastModified) {
-              throw new Error(scrapbook.lang('ScrapBookErrorDraggedTreeOutdated'));
-            }
+      await sourceBook.transaction({
+        mode: 'validate',
+        callback: async (sourceBook) => {
+          // validate if the dragging source is up to date
+          if (treeLastModified !== sourceBook.treeLastModified) {
+            this.warn(scrapbook.lang('ScrapBookErrorSourceTreeOutdated'));
+            return;
+          }
 
-            await book.loadMeta();
-            await book.loadToc();
+          if (sourceBook !== targetBook) {
+            await sourceBook.loadMeta();
+            await sourceBook.loadToc();
 
             await targetBook.transaction({
               mode: 'validate',
               callback: _copyItems,
             });
-          },
-        });
-      } else {
-        await targetBook.transaction({
-          mode: 'validate',
-          callback: async (book) => {
-            // validate if the dragging source is up to date
-            if (treeLastModified !== book.treeLastModified) {
-              throw new Error(scrapbook.lang('ScrapBookErrorDraggedTreeOutdated'));
-            }
+            return;
+          }
 
-            await _copyItems(book);
-          },
-        });
-      }
+          await _copyItems(sourceBook);
+        },
+      });
     },
 
     async uploadItems(files, targetId, targetIndex) {
@@ -1690,7 +1705,7 @@
 <html data-scrapbook-type="file">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url=${scrapbook.escapeHtml(url)}">
+<meta http-equiv="refresh" content="0; url=${scrapbook.escapeHtml(url)}">
 ${title ? '<title>' + scrapbook.escapeHtml(title, false) + '</title>\n' : ''}</head>
 <body>
 Redirecting to file <a href="${scrapbook.escapeHtml(url)}">${scrapbook.escapeHtml(filename, false)}</a>
@@ -1780,7 +1795,7 @@ Redirecting to file <a href="${scrapbook.escapeHtml(url)}">${scrapbook.escapeHtm
             metaViewportNode.setAttribute('name', 'viewport');
             metaViewportNode.setAttribute('content', 'width=device-width');
           }
-          content = scrapbook.doctypeToString(doc.doctype) + doc.documentElement.outerHTML;
+          content = scrapbook.documentToString(doc);
           break;
         }
         default: {
@@ -1827,9 +1842,48 @@ ${scrapbook.escapeHtml(content)}
       this.tree.insertItem(newItem.id, parentItemId, index);
     },
 
+    async editPostit(id) {
+      const postitElem = document.getElementById('postit');
+      if (!postitElem) { return; }
+
+      await this.savePostit();
+
+      const u = new URL(browser.runtime.getURL("scrapbook/postit-frame.html"));
+      u.searchParams.append('id', id);
+      u.searchParams.append('bookId', this.bookId);
+      postitElem.src = u.href;
+
+      postitElem.parentNode.removeAttribute('hidden');
+    },
+
+    async savePostit() {
+      const postitElem = document.getElementById('postit');
+      if (!postitElem) { return; }
+
+      // save the currently opened one, if exists
+      try {
+        await postitElem.contentWindow.editor.save();
+        await this.rebuild();
+      } catch (ex) {
+        // skip error
+      }
+    },
+
+    async uneditPostit(rebuild) {
+      const postitElem = document.getElementById('postit');
+      if (!postitElem) { return; }
+      postitElem.parentNode.setAttribute('hidden', '');
+      postitElem.src = '';
+      if (rebuild) {
+        await this.rebuild();
+        this.treeElem.focus();
+      }
+    },
+
     commands: {
-      async index() {
-        await this.openLink(this.book.indexUrl, true);
+      async index({modifiers}) {
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey || scrapbook.getOption("scrapbook.sidebarOpenInNewTab");
+        await this.openLink(this.book.indexUrl, newTab);
       },
 
       async exec_book() {
@@ -1843,58 +1897,24 @@ ${scrapbook.escapeHtml(content)}
 
       async opentab({itemElems}) {
         for (const elem of itemElems) {
-          const id = elem.getAttribute('data-id');
-          const item = this.book.meta[id];
-          switch (item.type) {
-            case 'folder':
-            case 'separator': {
-              break;
-            }
-            case 'bookmark': {
-              if (item.source) {
-                await this.openLink(item.source, true);
-              }
-              break;
-            }
-            case 'postit': {
-              if (item.index) {
-                const u = new URL(browser.runtime.getURL("scrapbook/postit.html"));
-                u.searchParams.append('id', id);
-                u.searchParams.append('bookId', this.book.id);
-                await this.openLink(u.href, true);
-              }
-              break;
-            }
-            case 'file':
-            default: {
-              if (item.index) {
-                const target = this.book.dataUrl + scrapbook.escapeFilename(item.index);
-                await this.openLink(target, true);
-              }
-              break;
-            }
-          }
+          const url = this.tree.getItemUrl(elem);
+          if (!url) { continue; }
+          await this.openLink(url, true);
         }
       },
 
-      async view_text({itemElems}) {
+      async view_text({itemElems, modifiers}) {
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey || scrapbook.getOption("scrapbook.sidebarViewTextInNewTab");
         for (const elem of itemElems) {
           const id = elem.getAttribute('data-id');
           const item = this.book.meta[id];
           if (!item.index) { continue; }
 
-          let target = this.book.dataUrl + scrapbook.escapeFilename(item.index);
-          if (target.endsWith('/index.html')) {
-            const redirectedTarget = await server.getMetaRefreshTarget(target);
-            if (redirectedTarget) {
-              target = redirectedTarget;
-            }
-          }
-
+          const target = await this.book.getItemIndexUrl(item);
           const u = new URL(target);
           u.searchParams.set('a', 'source');
           if (item.charset) { u.searchParams.set('e', item.charset); }
-          await this.openLink(u.href, true);
+          await this.openLink(u.href, newTab);
         }
       },
 
@@ -1904,14 +1924,7 @@ ${scrapbook.escapeHtml(content)}
           const item = this.book.meta[id];
           if (!item.index) { continue; }
 
-          let target = this.book.dataUrl + scrapbook.escapeFilename(item.index);
-          if (target.endsWith('/index.html')) {
-            const redirectedTarget = await server.getMetaRefreshTarget(target);
-            if (redirectedTarget) {
-              target = scrapbook.splitUrlByAnchor(redirectedTarget)[0];
-            }
-          }
-
+          const target = await this.book.getItemIndexUrl(item, {checkArchiveRedirect: false});
           await server.request({
             url: target + '?a=exec',
             method: "GET",
@@ -1942,13 +1955,14 @@ ${scrapbook.escapeHtml(content)}
         }
       },
 
-      async source({itemElems}) {
+      async source({itemElems, modifiers}) {
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey || scrapbook.getOption("scrapbook.sidebarSourceInNewTab");
         for (const elem of itemElems) {
           const id = elem.getAttribute('data-id');
           const item = this.book.meta[id];
           if (item.source) {
             const target = item.source;
-            await this.openLink(target, true);
+            await this.openLink(target, newTab);
           }
         }
       },
@@ -1966,7 +1980,8 @@ ${scrapbook.escapeHtml(content)}
         }
       },
 
-      async search_in({itemElems}) {
+      async search_in({itemElems, modifiers}) {
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey || scrapbook.getOption("scrapbook.sidebarSearchInNewTab");
         const urlObj = new URL(browser.runtime.getURL("scrapbook/search.html"));
         urlObj.searchParams.set('id', this.bookId);
         for (const elem of itemElems) {
@@ -1974,7 +1989,7 @@ ${scrapbook.escapeHtml(content)}
           urlObj.searchParams.append('root', id);
         }
         const target = urlObj.href;
-        await this.openLink(target, true);
+        await this.openLink(target, newTab);
       },
 
       async sort({itemElems}) {
@@ -2064,6 +2079,69 @@ ${scrapbook.escapeHtml(content)}
         });
 
         await this.tree.rebuild();
+      },
+
+      async copyinfo(...args) {
+        const tempTextarea = document.createElement('textarea');
+
+        const copyToClipboard = (plainText, htmlText) => {
+          const _activeElement = document.activeElement;
+
+          const callback = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (htmlText) {
+              event.clipboardData.setData('text/html', htmlText);
+            }
+            event.clipboardData.setData('text/plain', plainText);
+          };
+
+          tempTextarea.addEventListener('copy', callback);
+          document.documentElement.appendChild(tempTextarea);
+          tempTextarea.select();
+          document.execCommand('copy');
+          tempTextarea.removeEventListener('copy', callback);
+          tempTextarea.remove();
+          _activeElement.focus();
+        };
+
+        const copyinfo = async ({itemElems, modifiers}) => {
+          if (!itemElems.length) { return; }
+
+          const items = [];
+          {
+            if (modifiers.shiftKey || modifiers.ctrlKey) {
+              const elems = new Set();
+              for (const itemElem of itemElems) {
+                elems.add(itemElem);
+                this.tree.loadDescendants(itemElem);
+                for (const elem of itemElem.querySelectorAll('li[data-id]')) {
+                  elems.add(elem);
+                }
+              }
+              itemElems = elems;
+            }
+            for (const itemElem of itemElems) {
+              const id = itemElem.getAttribute('data-id');
+              items.push(this.book.meta[id]);
+            }
+          }
+
+          const plainFormat = scrapbook.getOption("scrapbook.copyItemInfoFormatPlain");
+          const plainText = items.map((item) => {
+            return scrapbook.ItemInfoFormatter.format(item, plainFormat, {book: this.book});
+          }).join('\r\n');
+
+          const htmlFormat = scrapbook.getOption("scrapbook.copyItemInfoFormatHtml");
+          const htmlText = htmlFormat ? items.map((item) => {
+            return scrapbook.ItemInfoFormatter.format(item, htmlFormat, {book: this.book});
+          }).join('<br>') : "";
+
+          copyToClipboard(plainText, htmlText);
+        };
+
+        this.copyinfo = copyinfo;
+        return await copyinfo(...args);
       },
 
       async meta({itemElems: [itemElem]}) {
@@ -2271,15 +2349,19 @@ ${scrapbook.escapeHtml(content)}
         this.tree.refreshItem(id);
       },
 
-      async mkfolder({itemElems: [itemElem]}) {
+      async mkfolder({itemElems: [itemElem], modifiers}) {
         let parentItemId = this.rootId;
         let index = Infinity;
 
         if (itemElem) {
-          ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
+          if (modifiers.altKey) {
+            parentItemId = itemElem.getAttribute('data-id');
+          } else {
+            ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
 
-          // insert after the selected one
-          index += 1;
+            // insert after the selected one
+            index += 1;
+          }
         }
 
         // create new item
@@ -2306,15 +2388,19 @@ ${scrapbook.escapeHtml(content)}
         this.tree.insertItem(newItem.id, parentItemId, index);
       },
 
-      async mksep({itemElems: [itemElem]}) {
+      async mksep({itemElems: [itemElem], modifiers}) {
         let parentItemId = this.rootId;
         let index = Infinity;
 
         if (itemElem) {
-          ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
+          if (modifiers.altKey) {
+            parentItemId = itemElem.getAttribute('data-id');
+          } else {
+            ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
 
-          // insert after the selected one
-          index += 1;
+            // insert after the selected one
+            index += 1;
+          }
         }
 
         // create new item
@@ -2341,16 +2427,22 @@ ${scrapbook.escapeHtml(content)}
         this.tree.insertItem(newItem.id, parentItemId, index);
       },
 
-      async mkpostit({itemElems: [itemElem]}) {
+      async mkpostit({itemElems: [itemElem], modifiers}) {
         let parentItemId = this.rootId;
         let index = Infinity;
 
         if (itemElem) {
-          ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
+          if (modifiers.altKey) {
+            parentItemId = itemElem.getAttribute('data-id');
+          } else {
+            ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
 
-          // insert after the selected one
-          index += 1;
+            // insert after the selected one
+            index += 1;
+          }
         }
+
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey;
 
         // create new item
         const newItem = this.book.addItem({
@@ -2389,23 +2481,37 @@ ${scrapbook.escapeHtml(content)}
         // update DOM
         this.tree.insertItem(newItem.id, parentItemId, index);
 
-        // open link
-        const u = new URL(browser.runtime.getURL("scrapbook/postit.html"));
-        u.searchParams.append('id', newItem.id);
-        u.searchParams.append('bookId', this.book.id);
-        await this.openLink(u.href, true);
+        // edit the postit
+        if (this.mode !== 'normal') {
+          return;
+        }
+
+        if (newTab || scrapbook.getOption("scrapbook.sidebarEditPostitInNewTab")) {
+          const u = new URL(browser.runtime.getURL("scrapbook/postit.html"));
+          u.searchParams.append('id', newItem.id);
+          u.searchParams.append('bookId', this.book.id);
+          await this.openLink(u.href, true);
+        } else {
+          await this.editPostit(newItem.id);
+        }
       },
 
-      async mknote({itemElems: [itemElem]}) {
+      async mknote({itemElems: [itemElem], modifiers}) {
         let parentItemId = this.rootId;
         let index = Infinity;
 
         if (itemElem) {
-          ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
+          if (modifiers.altKey) {
+            parentItemId = itemElem.getAttribute('data-id');
+          } else {
+            ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
 
-          // insert after the selected one
-          index += 1;
+            // insert after the selected one
+            index += 1;
+          }
         }
+
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey;
 
         let type;
         {
@@ -2479,7 +2585,7 @@ ${scrapbook.escapeHtml(content)}
 <html data-scrapbook-type="note">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url=index.md">
+<meta http-equiv="refresh" content="0; url=index.md">
 </head>
 <body>
 Redirecting to file <a href="index.md">index.md</a>
@@ -2501,9 +2607,13 @@ Redirecting to file <a href="index.md">index.md</a>
         this.tree.insertItem(newItem.id, parentItemId, index);
 
         // open link
+        if (this.mode !== 'normal') {
+          return;
+        }
+
         switch (type) {
           case 'html': {
-            await this.openLink(target, true);
+            await this.openLink(target, newTab || scrapbook.getOption("scrapbook.sidebarEditNoteInNewTab"));
             break;
           }
 
@@ -2511,34 +2621,39 @@ Redirecting to file <a href="index.md">index.md</a>
             const u = new URL(browser.runtime.getURL("scrapbook/edit.html"));
             u.searchParams.set('id', newItem.id);
             u.searchParams.set('bookId', this.bookId);
-            await this.openLink(u.href, true);
+            await this.openLink(u.href, newTab || scrapbook.getOption("scrapbook.sidebarEditNoteInNewTab"));
             break;
           }
         }
       },
 
-      async upload({itemElems: [itemElem], files}) {
+      async upload({itemElems: [itemElem], files, modifiers}) {
         let parentItemId = this.rootId;
         let index = Infinity;
 
         if (itemElem) {
-          ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
+          if (modifiers.altKey) {
+            parentItemId = itemElem.getAttribute('data-id');
+          } else {
+            ({parentItemId, index} = this.tree.getParentAndIndex(itemElem));
 
-          // insert after the selected one
-          index += 1;
+            // insert after the selected one
+            index += 1;
+          }
         }
 
         await this.uploadItems(files, parentItemId, index);
       },
 
-      async edit({itemElems: [itemElem]}) {
+      async edit({itemElems: [itemElem], modifiers}) {
         if (!itemElem) { return; }
 
+        const newTab = modifiers.shiftKey || modifiers.ctrlKey || scrapbook.getOption("scrapbook.sidebarEditNoteInNewTab");
         const id = itemElem.getAttribute('data-id');
         const urlObj = new URL(browser.runtime.getURL("scrapbook/edit.html"));
         urlObj.searchParams.set('id', id);
         urlObj.searchParams.set('bookId', this.bookId);
-        await this.openLink(urlObj.href, true);
+        await this.openLink(urlObj.href, newTab);
       },
 
       async recapture({itemElems}) {

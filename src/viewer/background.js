@@ -3,19 +3,28 @@
  * The background script for viewer functionality
  *
  * @require {Object} scrapbook
+ * @public {Object} viewer
  *****************************************************************************/
 
 (function (root, factory) {
   // Browser globals
-  factory(
+  if (root.hasOwnProperty('viewer')) { return; }
+  root.viewer = factory(
     root.isDebug,
     root.browser,
     root.scrapbook,
     console,
   );
-}(this, async function (isDebug, browser, scrapbook, console) {
+}(this, function (isDebug, browser, scrapbook, console) {
 
   'use strict';
+
+  const VIEWER_BEFORE_REQUEST_FILTER = {urls: ["file://*"], types: ["main_frame", "sub_frame"]};
+  const VIEWER_BEFORE_REQUEST_EXTRA = ["blocking"];
+  const VIEWER_HEADERS_RECEIVED_FILTER = {urls: ["http://*/*", "https://*/*"], types: ["main_frame", "sub_frame"]};
+  const VIEWER_HEADERS_RECEIVED_EXTRA = ["blocking", "responseHeaders"];
+
+  let allowFileAccess;
 
   function redirectUrl(tabId, type, url, filename, mime) {
     if (mime === "application/html+zip" && scrapbook.getOption("viewer.viewHtz")) {
@@ -86,32 +95,26 @@ a {
     return {redirectUrl: newUrl};
   }
 
-  browser.extension.isAllowedFileSchemeAccess().then((allowFileAccess) => {
-    if (!allowFileAccess) { return; }
+  function onBeforeRequest(details) {
+    return redirectUrl(details.tabId, details.type, new URL(details.url), null, "application/octet-stream");
+  }
 
-    // This event won't fire when visiting a file URL if
-    // isAllowedFileSchemeAccess is false
-    browser.webRequest.onBeforeRequest.addListener(function (details) {
-      return redirectUrl(details.tabId, details.type, new URL(details.url), null, "application/octet-stream");
-    }, {urls: ["file://*"], types: ["main_frame", "sub_frame"]}, ["blocking"]);
-  });
-
-  browser.webRequest.onHeadersReceived.addListener(function (details) {
+  function onHeadersReceived(details) {
     const headers = details.responseHeaders;
     let mime;
     let filename;
-    for (const i in headers) {
-      switch (headers[i].name.toLowerCase()) {
+    for (const header of headers) {
+      switch (header.name.toLowerCase()) {
         case "content-type": {
-          const contentType = scrapbook.parseHeaderContentType(headers[i].value);
+          const contentType = scrapbook.parseHeaderContentType(header.value);
           mime = contentType.type;
           break;
         }
         case "content-disposition": {
-          const contentDisposition = scrapbook.parseHeaderContentDisposition(headers[i].value);
+          const contentDisposition = scrapbook.parseHeaderContentDisposition(header.value);
 
           // do not launch viewer if the file is marked to be downloaded
-          if (contentDisposition.type === 'attachment') {
+          if (contentDisposition.type === 'attachment' && !scrapbook.getOption("viewer.viewAttachments")) {
             return;
           }
 
@@ -122,31 +125,50 @@ a {
     }
 
     return redirectUrl(details.tabId, details.type, new URL(details.url), filename, mime);
-  }, {urls: ["http://*/*", "https://*/*"], types: ["main_frame", "sub_frame"]}, ["blocking", "responseHeaders"]);
+  }
 
-  // clear viewer caches
-  {
+  function toggleViewerListeners() {
+    browser.webRequest.onBeforeRequest.removeListener(onBeforeRequest);
+    browser.webRequest.onHeadersReceived.removeListener(onHeadersReceived);
+    if (scrapbook.getOption("viewer.viewHtz") || scrapbook.getOption("viewer.viewMaff")) {
+      if (allowFileAccess) {
+        browser.webRequest.onBeforeRequest.addListener(onBeforeRequest, VIEWER_BEFORE_REQUEST_FILTER, VIEWER_BEFORE_REQUEST_EXTRA);
+      }
+      browser.webRequest.onHeadersReceived.addListener(onHeadersReceived, VIEWER_HEADERS_RECEIVED_FILTER, VIEWER_HEADERS_RECEIVED_EXTRA);
+    }
+  }
+
+  async function clearViewerCaches() {
     const tabs = await browser.tabs.query({});
 
     /* build a set with the ids that are still being viewed */
     const usedIds = new Set();
-    tabs.forEach((tab) => {
+    for (const tab of tabs) {
       const u = new URL(tab.url);
       if (u.href.startsWith(browser.runtime.getURL("viewer/view.html") + '?')) {
         const id = u.searchParams.get('id');
         if (id) { usedIds.add(id); }
       }
-    });
+    }
 
     /* remove cache entry for all IDs that are not being viewed */
-    const items = await scrapbook.cache.getAll({table: "pageCache"});
-    for (const key in items) {
-      const keyData = JSON.parse(key);
-      if (usedIds.has(keyData.id)) {
-        delete(items[key]);
-      }
-    }
-    await scrapbook.cache.remove(Object.keys(items));
+    await scrapbook.cache.remove((obj) => {
+      return obj.table === 'pageCache' && !usedIds.has(obj.id);
+    });
   }
+
+  async function init() {
+    clearViewerCaches(); // async
+
+    allowFileAccess = await browser.extension.isAllowedFileSchemeAccess();
+    await scrapbook.loadOptionsAuto;
+    toggleViewerListeners();
+  }
+
+  init();
+
+  return {
+    toggleViewerListeners,
+  };
 
 }));
