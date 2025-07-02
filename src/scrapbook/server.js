@@ -3,20 +3,19 @@
  * Shared class for server related manipulation.
  *
  * @require {Object} scrapbook
+ * @require {Object} Mime
  * @public {Object} server
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('server')) { return; }
-  root.server = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    window,
-    console,
+  if (global.hasOwnProperty('server')) { return; }
+  global.server = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.Mime,
   );
-}(this, function (isDebug, browser, scrapbook, window, console) {
+}(this, function (isDebug, scrapbook, Mime) {
 
   'use strict';
 
@@ -26,38 +25,7 @@
   // this should correspond with the lock stale time in the backend server
   const LOCK_STALE_TIME = 60 * 1000;
 
-  const TRANSCATION_BACKUP_TREE_FILES_REGEX = /^(meta|toc)\d*\.js$/i;
-
-  const TEMPLATE_DIR = '/templates/';
-  const TEMPLATES = {
-    'html': {
-      filename: 'note_template.html',
-      content: `<!DOCTYPE html>
-<html data-scrapbook-type="note">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-scrapbook-elem="title">%NOTE_TITLE%</title>
-</head>
-<body>%NOTE_TITLE%</body>
-</html>
-`,
-    },
-    'markdown': {
-      filename: 'note_template.md',
-      content: `%NOTE_TITLE%`,
-    },
-  };
-
-  const REGEX_ITEM_POSTIT = new RegExp('^[\\S\\s]*?<pre>\\n?([^<]*(?:<(?!/pre>)[^<]*)*)\\n</pre>[\\S\\s]*$');
-  const ITEM_POSTIT_FORMATTER = `\
-<!DOCTYPE html><html><head>\
-<meta charset="UTF-8">\
-<meta name="viewport" content="width=device-width">\
-<style>pre { white-space: pre-wrap; overflow-wrap: break-word; }</style>\
-</head><body><pre>
-%POSTIT_CONTENT%
-</pre></body></html>`;
+  const TRANSCATION_TREE_FILES_REGEX = /^(meta|toc)\d*\.js$/;
 
   class RequestError extends Error {
     constructor(message, response) {
@@ -72,11 +40,9 @@
   }
 
   class Server {
-    constructor () {
+    constructor() {
       this._config = null;
       this._serverRoot = null;
-      this._user = null;
-      this._password = null;
       this._bookId = null;
       this._books = null;
     }
@@ -108,17 +74,19 @@
      * Wrapped API for a general request to backend server
      *
      * @param {Object} params
-     * @param {string|URL} params.url
+     * @param {string|URL} [params.url]
+     * @param {string|Object|Array|URLSearchParams} [params.query]
      * @param {string} [params.method]
-     * @param {Object|Headers} [params.headers]
-     * @param {Object|FormData} [params.body]
+     * @param {Object|Array|Headers} [params.headers]
+     * @param {Object|Array|FormData} [params.body]
      * @param {string} [params.credentials]
      * @param {string} [params.cache]
      * @param {boolean} [params.csrfToken]
      * @param {string} [params.format]
      */
     async request({
-      url,
+      url = this.serverRoot,
+      query,
       method,
       headers,
       body,
@@ -135,20 +103,17 @@
         url = new URL(url);
       }
 
-      if (headers && !(headers instanceof Headers)) {
-        const h = new Headers();
-        for (const [key, value] of Object.entries(headers)) {
-          if (typeof value !== "undefined") {
-            if (Array.isArray(value)) {
-              for (const v of value) {
-                h.append(key, v);
-              }
-            } else {
-              h.append(key, value);
-            }
-          }
+      if (query) {
+        if (!(query instanceof URLSearchParams)) {
+          query = new URLSearchParams(query);
         }
-        headers = h;
+        for (const [key, value] of query) {
+          url.searchParams.append(key, value);
+        }
+      }
+
+      if (headers && !(headers instanceof Headers)) {
+        headers = new Headers(headers);
       }
 
       if (format) {
@@ -170,13 +135,17 @@
 
       if (body && !(body instanceof FormData)) {
         const b = new FormData();
-        for (const [key, value] of Object.entries(body)) {
-          if (typeof value !== "undefined") {
-            if (Array.isArray(value)) {
-              for (const v of value) {
-                b.append(key, v);
-              }
-            } else {
+        try {
+          // Array or iterable
+          for (const [key, value] of body) {
+            if (typeof value !== 'undefined') {
+              b.append(key, value);
+            }
+          }
+        } catch (ex) {
+          // object
+          for (const [key, value] of Object.entries(body)) {
+            if (typeof value !== 'undefined') {
               b.append(key, value);
             }
           }
@@ -201,7 +170,7 @@
           cache,
         });
       } catch (ex) {
-        throw new RequestError('Unable to connect to backend server.');
+        throw new RequestError('Unable to connect to backend server.', {url});
       }
 
       if (!response.ok) {
@@ -224,7 +193,7 @@
      *
      * @param {Object} params
      * @param {string|URL} [params.url]
-     * @param {Object} [params.query]
+     * @param {string|Object|Array|URLSearchParams} [params.query]
      * @param {string} [params.credentials]
      * @param {string} [params.cache]
      * @param {boolean} [params.csrfToken]
@@ -245,16 +214,11 @@
       url.searchParams.set('f', 'sse');
 
       if (query) {
-        for (const [key, value] of Object.entries(query)) {
-          if (typeof value !== "undefined") {
-            if (Array.isArray(value)) {
-              for (const v of value) {
-                url.searchParams.append(key, v);
-              }
-            } else {
-              url.searchParams.append(key, value);
-            }
-          }
+        if (!(query instanceof URLSearchParams)) {
+          query = new URLSearchParams(query);
+        }
+        for (const [key, value] of query) {
+          url.searchParams.append(key, value);
         }
       }
 
@@ -262,7 +226,7 @@
         url.searchParams.set('token', await this.acquireToken());
       }
 
-      return await new Promise(async (resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         const evtSource = new EventSource(url.href);
 
         evtSource.addEventListener('complete', (event) => {
@@ -305,20 +269,11 @@
       }
 
       if (!scrapbook.hasServer()) {
-        throw new Error('Backend server not configured.');
+        throw new Error('Backend server address not configured.');
       }
 
       // record configs
       this._bookId = (await scrapbook.cache.get({table: "scrapbookServer", key: "currentScrapbook"}, 'storage')) || "";
-
-      // Take user and password only when both are non-empty;
-      // otherwise omit both fields for the browser to try cached
-      // auth credentials.
-      this._user = scrapbook.getOption("server.user");
-      this._password = scrapbook.getOption("server.password");
-      if (!(this._user && this._password)) {
-        this._user = this._password = null;
-      }
 
       // load config from server
       {
@@ -331,15 +286,25 @@
           throw new Error('Malformed server address.');
         }
 
-        // Use xhr for the first time for authentication as fetch API doesn't
+        const url = rootUrlObj.href + '?a=config&f=json&ts=' + Date.now(); // ignore cache
+
+        // Take user and password only when both are non-empty;
+        // otherwise omit both fields for the browser to try the cached
+        // auth credentials.
+        let user = await scrapbook.getOption("server.user");
+        let password = await scrapbook.getOption("server.password");
+        if (!(user && password)) {
+          user = password = null;
+        }
+
+        // Use XHR for the first time for authentication as fetch API doesn't
         // support a URL with user/password.
         let xhr;
-        const url = rootUrlObj.href + '?a=config&f=json&ts=' + Date.now(); // ignore cache
         try {
           xhr = await scrapbook.xhr({
-            url, // ignore cache
-            user: this._user,
-            password: this._password,
+            url,
+            user,
+            password,
             responseType: 'json',
             requestHeaders: {
               Accept: 'application/json, */*;q=0.1',
@@ -407,7 +372,7 @@
       // load books
       {
         this._books = {};
-        for (const bookId in server.config.book) {
+        for (const bookId in this.config.book) {
           this._books[bookId] = new Book(bookId, this);
         }
       }
@@ -433,12 +398,16 @@
     }
 
     async getMetaRefreshTarget(refUrl) {
-      const doc = await server.request({
+      const doc = await this.request({
         url: refUrl,
         method: "GET",
       })
         .then(r => r.blob())
         .then(b => scrapbook.readFileAsDocument(b));
+
+      if (!doc) {
+        return;
+      }
 
       return scrapbook.getMetaRefreshTarget(doc, refUrl);
     }
@@ -474,6 +443,13 @@
       this.treeUrl = this.topUrl +
           (this.config.tree_dir ? scrapbook.quote(this.config.tree_dir) + '/' : '');
 
+      {
+        const backupDir = server.config.app.backup_dir;
+        this.backupUrl = typeof backupDir === 'string' ?
+            server.serverRoot + (backupDir ? scrapbook.quote(backupDir) + '/' : '') :
+            null;
+      }
+
       this.indexUrl = this.topUrl + this.config.index;
 
       this.treeFiles = null;
@@ -495,8 +471,7 @@
         charset: undefined,
         marked: undefined,
         locked: undefined,
-        folder: undefined,
-        exported: undefined,
+        location: undefined,
       };
     }
 
@@ -512,7 +487,9 @@
      * Load tree file list.
      *
      * - Also update this.treeLastModified.
+     * - Also update this.treeFiles.
      *
+     * @param {boolean} [refresh] - Load from the server even if this.treeFiles exists.
      * @return {Map}
      */
     async loadTreeFiles(refresh = false) {
@@ -550,25 +527,25 @@
         }
       }
 
-      let regex = /^(?:meta|toc)\d*\.js$/i;
-      let treeLastModified = new Date(response.headers.get('Last-Modified')).valueOf();
-      let treeFiles = data.reduce((data, item) => {
-        if (regex.test(item.name)) {
-          treeLastModified = Math.max(treeLastModified, parseInt(item.last_modified) * 1000);
+      // generate a checksum for change detection
+      const treeFiles = new Map();
+      let checksum = [];
+      for (const file of data) {
+        treeFiles.set(file.name, file);
+        if (TRANSCATION_TREE_FILES_REGEX.test(file.name) && file.type === 'file') {
+          checksum.push([file.name, file.last_modified, file.size].join('\t'));
         }
-        data.set(item.name, item);
-        return data;
-      }, new Map());
+      }
+      checksum = checksum.sort().join('\n');
 
-      this.treeLastModified = treeLastModified;
+      this.treeLastModified = checksum;
       return this.treeFiles = treeFiles;
     }
 
     /**
-     * Load files with specific tree file name.
+     * Load the tree files with the specific name.
      *
-     * e.g. meta.js, meta1.js, ...
-     *
+     * @param {string} name - e.g. "meta" for loading meta.js, meta1.js, ...
      * @return {Object}
      */
     async loadTreeFile(name) {
@@ -608,6 +585,10 @@
       return rv;
     }
 
+    /**
+     * @param {boolean} [refresh] - Load from the server even if this.meta exists.
+     * @return {Object}
+     */
     async loadMeta(refresh = false) {
       if (this.meta && !refresh) {
         return this.meta;
@@ -623,6 +604,10 @@
       return obj;
     }
 
+    /**
+     * @param {boolean} [refresh] - Load from the server even if this.toc exists.
+     * @return {Object}
+     */
     async loadToc(refresh = false) {
       if (this.toc && !refresh) {
         return this.toc;
@@ -631,12 +616,32 @@
       return this.toc = await this.loadTreeFile('toc');
     }
 
+    /**
+     * @param {boolean} [refresh] - Load from the server even if this.fulltext exists.
+     * @return {Object}
+     */
     async loadFulltext(refresh = false) {
       if (this.fulltext && !refresh) {
         return this.fulltext;
       }
 
       return this.fulltext = await this.loadTreeFile('fulltext');
+    }
+
+    /**
+     * Refresh loaded tree files if changed on the server.
+     *
+     * @return {boolean} Whether the tree is changed.
+     */
+    async refreshTreeFiles() {
+      const refresh = !await this.validateTree();
+      if (this.meta) {
+        await this.loadMeta(refresh);
+      }
+      if (this.toc) {
+        await this.loadToc(refresh);
+      }
+      return refresh;
     }
 
     async lockTree({
@@ -815,7 +820,16 @@
     /**
      * @callback transactionCallback
      * @param {Book} book - the Book the transaction is performed on.
-     * @param {boolean} [updated] - whether the server tree has been updated.
+     * @param {Object} params
+     * @param {string} params.lockId - ID of the lock.
+     * @param {Function} params.discardLock - a controller that discards the
+     *     lock (no longer keep and release it) when called. This should
+     *     normally be called after requested another action that keeps the
+     *     lock (by passing lockId).
+     * @param {string} [params.backupTs] - the timestamp for the automatic
+     *     backup ("validate" mode).
+     * @param {boolean} [params.updated] - whether the server tree has been
+     *     updated ("refresh" mode).
      */
 
     /**
@@ -831,7 +845,6 @@
      * @param {Object} params
      * @param {transactionCallback} params.callback - the callback function to
      *     peform the tasks.
-     * @param {integer} [params.timeout] - timeout for lock.
      * @param {string} [params.mode] - mode for the transaction:
      *     - "validate": validate the tree before the request and fail out if
      *       the remote tree has been updated.
@@ -839,18 +852,22 @@
      *        param about whether the remote tree has been updated.
      * @param {boolean} [params.autoBackup] - whether to automatically create a
      *     temporary tree backup before a transaction and remove after success.
+     * @param {string} [params.autoBackupTs] - timestamp for the auto backup.
+     * @param {string} [params.autoBackupNote] - note for the auto backup.
+     * @param {integer} [params.timeout] - timeout for lock.
      */
     async transaction({
       callback,
       mode,
       autoBackup = scrapbook.getOption("scrapbook.transactionAutoBackup"),
+      autoBackupTs,
+      autoBackupNote = 'transaction',
       timeout = 5,
     }) {
       let lockId;
       let keeper;
-      let updated;
       let backupTs;
-      let backupNote = 'transaction';
+      let updated;
 
       // lock the tree
       try {
@@ -868,6 +885,10 @@
         const refreshInterval = LOCK_STALE_TIME * 0.2;
         const refreshAcquireTimeout = 1;
         keeper = setInterval(async () => {
+          if (!lockId) {
+            clearInterval(keeper);
+            return;
+          }
           await this.lockTree({id: lockId, timeout: refreshAcquireTimeout});
         }, refreshInterval);
 
@@ -887,7 +908,7 @@
 
         // auto backup
         if (autoBackup) {
-          backupTs = scrapbook.dateToId();
+          backupTs = autoBackupTs || scrapbook.dateToId();
 
           // Load tree files if not done yet.
           if (!this.treeFiles) {
@@ -895,9 +916,14 @@
           }
 
           for (const [filename] of this.treeFiles) {
-            if (TRANSCATION_BACKUP_TREE_FILES_REGEX.test(filename)) {
+            if (TRANSCATION_TREE_FILES_REGEX.test(filename)) {
               await this.server.request({
-                url: this.treeUrl + filename + `?a=backup&ts=${backupTs}&note=${backupNote}`,
+                url: this.treeUrl + filename,
+                query: {
+                  a: 'backup',
+                  ts: backupTs,
+                  note: autoBackupNote,
+                },
                 method: "POST",
                 format: 'json',
                 csrfToken: true,
@@ -907,13 +933,19 @@
         }
 
         // run the callback
-        await callback.call(this, this, updated);
+        const discardLock = () => { lockId = null; };
+        await callback.call(this, this, {lockId, discardLock, backupTs, updated});
 
         // clear auto backup if transaction successful
         if (backupTs) {
           try {
             await this.server.request({
-              url: this.treeUrl + `?a=unbackup&ts=${backupTs}&note=${backupNote}`,
+              url: this.treeUrl,
+              query: {
+                a: 'unbackup',
+                ts: backupTs,
+                note: autoBackupNote,
+              },
               method: "POST",
               format: 'json',
               csrfToken: true,
@@ -927,26 +959,35 @@
         clearInterval(keeper);
 
         // unlock the tree
-        try {
-          await this.unlockTree({id: lockId});
-        } catch (ex) {
-          throw new Error(`Failed to unlock tree for remote book "${this.id}".`);
+        if (lockId) {
+          try {
+            await this.unlockTree({id: lockId});
+          } catch (ex) {
+            // eslint-disable-next-line no-unsafe-finally
+            throw new Error(`Failed to unlock tree for remote book "${this.id}".`);
+          }
         }
       }
     }
 
     generateMetaFile(jsonData) {
+      // Escape U+2028 and U+2029 for embedded JSON data used as JavaScript
+      // code to prevent script breakage and potential security issue in old
+      // browsers not supporting ES2019, as they are not allowed in a string
+      // literal.
+      // https://stackoverflow.com/questions/16005091/node-js-javascript-stringify
       return `/**
  * Feel free to edit this file, but keep data code valid JSON format.
  */
-scrapbook.meta(${JSON.stringify(jsonData, null, 2)})`;
+scrapbook.meta(${JSON.stringify(jsonData, null, 2).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')})`;
     }
 
     generateTocFile(jsonData) {
+      // see generateMetaFile for the replacing
       return `/**
  * Feel free to edit this file, but keep data code valid JSON format.
  */
-scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
+scrapbook.toc(${JSON.stringify(jsonData, null, 2).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')})`;
     }
 
     generateId() {
@@ -963,17 +1004,15 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
     /**
      * Add (or replace) an item to the Book.
      *
-     * @param {Object} params
-     * @param {?Object} params.item - null to generate a default item. Overwrites existed id.
-     * @param {?string} params.parentId - null to not add to any parent
-     * @param {integer} params.index - Infinity to insert to last
-     * @return {Object}
+     * The purpose of this method is to emulate adding a series of items to
+     * prevent generating duplicated item IDs.  This does not do all required
+     * steps to add an item, and a true item adding should then be issued to
+     * the server, and meta and toc of this Book should then be refreshed.
+     *
+     * @param {?Object} item - null to generate a default item. Overwrites existed id.
+     * @return {Object} The newly added item object.
      */
-    addItem({
-      item,
-      parentId = 'root',
-      index = Infinity,
-    }) {
+    addItem(item) {
       // generate a cloned item, with keys sorted in a predefined order
       item = Object.assign(this.defaultMeta, item);
 
@@ -995,165 +1034,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
       // add to meta (overwrite if item.id exists)
       this.meta[item.id] = item;
 
-      // add to TOC if parentId is not null
-      if (parentId) {
-        if (!this.toc[parentId]) {
-          this.toc[parentId] = [];
-        }
-        this.toc[parentId].splice(index, 0, item.id);
-      }
-
       return item;
-    }
-
-    /**
-     * Remove an item and descneding items from the Book.
-     *
-     * @param {Object} params
-     * @param {string} params.id
-     * @param {?string} params.parentId - null to not removed from certain parent
-     *         (useful for checking stale items)
-     * @param {integer} params.index
-     * @return {Set} a set of removed items
-     */
-    removeItemTree({
-      id,
-      parentId,
-      index,
-    }) {
-      // reachable items
-      const allItems = new Set();
-      this.getReachableItems('root', allItems);
-      this.getReachableItems('hidden', allItems);
-      this.getReachableItems('recycle', allItems);
-
-      // remove from parent TOC
-      if (parentId && this.toc[parentId]) {
-        this.toc[parentId].splice(index, 1);
-        if (!this.toc[parentId].length) {
-          delete this.toc[parentId];
-        }
-      }
-
-      // reachable items after removal
-      const curItems = new Set();
-      this.getReachableItems('root', curItems);
-      this.getReachableItems('hidden', curItems);
-      this.getReachableItems('recycle', curItems);
-
-      // clear stale data for items no longer reachable
-      const removedItems = new Set();
-      for (const id of allItems) {
-        if (curItems.has(id)) {
-          // still reachable
-          continue;
-        }
-        if (!this.meta[id]) {
-          // already deleted, but repeatedly called due to some reason
-          continue;
-        }
-        removedItems.add(this.meta[id]);
-        delete this.meta[id];
-        delete this.toc[id];
-      }
-
-      return removedItems;
-    }
-
-    /**
-     * Remove an item from Book tree and put it to recycle bin if not referenced.
-     *
-     * @param {Object} params
-     * @param {string} params.id
-     * @param {?string} params.currentParentId - null to not removed from certain parent
-     *         (useful for checking stale items)
-     * @param {integer} params.currentIndex
-     * @param {string} [params.targetParentId] - ID of the recycle bin item
-     * @param {integer} [params.targetIndex] - Infinity to insert to last
-     * @return {integer} the real insertion index
-     */
-    recycleItemTree({
-      id,
-      currentParentId,
-      currentIndex,
-      targetParentId = 'recycle',
-      targetIndex = Infinity,
-    }) {
-      // remove from parent TOC
-      if (currentParentId && this.toc[currentParentId]) {
-        this.toc[currentParentId].splice(currentIndex, 1);
-        if (!this.toc[currentParentId].length) {
-          delete this.toc[currentParentId];
-        }
-      }
-
-      // reachable items after removal
-      const curItems = new Set();
-      this.getReachableItems('root', curItems);
-      this.getReachableItems('hidden', curItems);
-      this.getReachableItems(targetParentId, curItems);
-
-      // add item to targetParentId if no longer referenced
-      if (!curItems.has(id)) {
-        if (!this.toc[targetParentId]) {
-          this.toc[targetParentId] = [];
-        }
-        this.toc[targetParentId].splice(targetIndex, 0, id);
-
-        if (!isFinite(targetIndex)) {
-          targetIndex = this.toc[targetParentId].length - 1;
-        }
-
-        // record recycled time and original parent ID and in meta
-        this.meta[id].parent = currentParentId;
-        this.meta[id].recycled = scrapbook.dateToId();
-      }
-
-      return targetIndex;
-    }
-
-    /**
-     * Move an item in the Book.
-     *
-     * @param {Object} params
-     * @param {string} params.id
-     * @param {?string} params.currentParentId - null if none
-     * @param {integer} params.currentIndex
-     * @param {integer} params.targetParentId
-     * @param {integer} [params.targetIndex] - Infinity to insert to last
-     * @return {integer} the real insertion index
-     */
-    moveItem({
-      id,
-      currentParentId,
-      currentIndex,
-      targetParentId,
-      targetIndex = Infinity,
-    }) {
-      // fix when moving within the same parent
-      // -1 as the current item will be removed from the original position
-      if (currentParentId === targetParentId && targetIndex > currentIndex) {
-        targetIndex--;
-      }
-
-      // remove from parent TOC
-      if (currentParentId && this.toc[currentParentId]) {
-        this.toc[currentParentId].splice(currentIndex, 1);
-        if (!this.toc[currentParentId].length) {
-          delete this.toc[currentParentId];
-        }
-      }
-
-      // add to target TOC
-      if (!this.toc[targetParentId]) {
-        this.toc[targetParentId] = [];
-      }
-      this.toc[targetParentId].splice(targetIndex, 0, id);
-
-      if (!isFinite(targetIndex)) {
-        targetIndex = this.toc[targetParentId].length - 1;
-      }
-      return targetIndex;
     }
 
     /**
@@ -1226,7 +1107,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
 
       const p = u.toLowerCase();
       if (p.endsWith('.maff')) {
-        const regex = new RegExp('^' + scrapbook.escapeRegExp(u) + '!/[^/]*/index\.html$');
+        const regex = new RegExp('^' + scrapbook.escapeRegExp(u) + '!/[^/]*/index\\.html$');
         return regex.test(u1);
       }
       if (p.endsWith('.htz')) {
@@ -1269,103 +1150,58 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
       return matchedItem;
     }
 
-    findItemPaths(id, rootId) {
-      const tracePath = (path) => {
-        const parent = this.toc[path[path.length - 1].id];
-        if (!parent) { return; }
+    * findItemPaths(id, rootId) {
+      const tracePath = function* () {
+        const toc = this.toc[path[path.length - 1].id];
+        if (!toc) { return; }
 
-        for (let i = 0, I = parent.length; i < I; ++i) {
-          const child = parent[i];
-          if (path.some(x => x.id === child)) { continue; }
+        for (let i = 0, I = toc.length; i < I; ++i) {
+          const child = toc[i];
+          if (ids.has(child)) { continue; }
 
           path.push({id: child, pos: i});
+          ids.add(child);
           if (child === id) {
-            result.push([...path]);
+            yield [...path];
           } else {
-            tracePath(path);
+            yield* tracePath();
           }
           path.pop();
+          ids.delete(child);
         }
-      };
+      }.bind(this);
 
-      const result = [];
-      tracePath([{id: rootId, pos: 1}]);
-      return result;
-    }
-
-    async getTemplate(type = 'html') {
-      const url = this.treeUrl + encodeURI(TEMPLATE_DIR + TEMPLATES[type].filename);
-
-      let templateText;
-      try {
-        // attempt to load template
-        templateText = await this.server.request({
-          url: url + '?a=source',
-          method: "GET",
-        }).then(r => r.text());
-      } catch (ex) {
-        // template file not exist, generate default one
-        templateText = TEMPLATES[type].content;
-        const blob = new Blob([templateText], {type: "text/plain"});
-        await this.server.request({
-          url: url + '?a=save',
-          method: "POST",
-          format: 'json',
-          csrfToken: true,
-          body: {
-            upload: blob,
-          },
-        });
-      }
-
-      return templateText;
-    }
-
-    async renderTemplate(target, item, type = 'html', subPageTitle) {
-      const templateText = await this.getTemplate(type);
-      return templateText.replace(/%(\w*)%/gu, (_, key) => {
-        let value;
-        switch (key) {
-          case '':
-            value = '%';
-            break;
-          case 'NOTE_TITLE':
-            value = (typeof subPageTitle === 'string') ? subPageTitle : item.title;
-            break;
-          case 'SCRAPBOOK_DIR':
-            value = scrapbook.getRelativeUrl(this.topUrl, target);
-            break;
-          case 'TREE_DIR':
-            value = scrapbook.getRelativeUrl(this.treeUrl, target);
-            break;
-          case 'DATA_DIR':
-            value = scrapbook.getRelativeUrl(this.dataUrl, target);
-            break;
-          case 'ITEM_DIR':
-            value = scrapbook.getRelativeUrl(this.dataUrl + item.index.replace(/[^\/]*$/, ''), target) || './';
-            break;
-        }
-        return value ? scrapbook.escapeHtml(value) : '';
-      });
+      const path = [{id: rootId}];
+      const ids = new Set(rootId);
+      yield* tracePath();
     }
 
     async loadPostit(item) {
-      const target = await this.getItemIndexUrl(item);
-      let text = await server.request({
-        url: target + '?a=source',
-        method: "GET",
-      }).then(r => r.text());
-      text = text.replace(/\r\n?/g, '\n');
-      text = text.replace(REGEX_ITEM_POSTIT, '$1');
-      return scrapbook.unescapeHtml(text);
+      const json = await this.server.request({
+        query: {
+          a: 'query',
+          lock: '',
+        },
+        body: {
+          q: JSON.stringify({
+            book: this.id,
+            cmd: 'load_item_postit',
+            args: [item.id],
+          }),
+          details: 1,
+        },
+        method: 'POST',
+        format: 'json',
+        csrfToken: true,
+      }).then(r => r.json());
+      return json.data[0];
     }
 
     async savePostit(id, text) {
       let item;
-      let errors = [];
       await this.transaction({
         mode: 'refresh',
-        callback: async (book, updated) => {
+        callback: async (book, {updated}) => {
           const meta = await book.loadMeta(updated);
 
           item = meta[id];
@@ -1373,63 +1209,28 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
             throw new Error(`Specified item "${id}" does not exist.`);
           }
 
-          // upload text content
-          const title = text.replace(/\n[\s\S]*$/, '');
-          const content = ITEM_POSTIT_FORMATTER.replace(/%(\w*)%/gu, (_, key) => {
-            let value;
-            switch (key) {
-              case '':
-                value = '%';
-                break;
-              case 'POSTIT_CONTENT':
-                value = text;
-                break;
-            }
-            return value ? scrapbook.escapeHtml(value) : '';
-          });
-
-          const target = await this.getItemIndexUrl(item);
-          await this.server.request({
-            url: target + '?a=save',
-            method: "POST",
+          const json = await this.server.request({
+            query: {
+              a: 'query',
+              lock: '',
+            },
+            body: {
+              q: JSON.stringify({
+                book: this.id,
+                cmd: 'save_item_postit',
+                args: [id, text],
+              }),
+              auto_cache: JSON.stringify(scrapbook.autoCacheOptions()),
+              details: 1,
+            },
+            method: 'POST',
             format: 'json',
             csrfToken: true,
-            body: {
-              text: scrapbook.unicodeToUtf8(content),
-            },
-          });
-
-          // update item
-          item.title = title;
-          item.modify = scrapbook.dateToId();
-          await book.saveMeta();
-
-          if (scrapbook.getOption("indexer.fulltextCache")) {
-            await this.server.requestSse({
-              query: {
-                "a": "cache",
-                "book": book.id,
-                "item": item.id,
-                "fulltext": 1,
-                "inclusive_frames": scrapbook.getOption("indexer.fulltextCacheFrameAsPageContent"),
-                "no_lock": 1,
-                "no_backup": 1,
-              },
-              onMessage(info) {
-                if (['error', 'critical'].includes(info.type)) {
-                  errors.push(`Error when updating fulltext cache: ${info.msg}`);
-                }
-              },
-            });
-          }
-
-          await book.loadTreeFiles(true);  // update treeLastModified
+          }).then(r => r.json());
+          item = json.data[0][id];
         },
       });
-      return {
-        title: item.title,
-        errors,
-      };
+      return item;
     }
 
     /**
@@ -1439,6 +1240,7 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
      * @param {Object} params.item
      * @param {string} params.icon - icon URL to cache
      * @return {Promise<string>} the new icon URL
+     * @throws {Error} when the favicon cannot be cached
      */
     async cacheFavIcon({book, item, icon}) {
       const getShaFile = (data) => {
@@ -1493,38 +1295,31 @@ scrapbook.toc(${JSON.stringify(jsonData, null, 2)})`;
         return icon;
       }
 
-      try {
-        const base = this.dataUrl + item.index;
-        const file = await getFavIcon(icon);
-        const target = this.treeUrl + 'favicon/' + file.name;
+      const base = this.dataUrl + item.index;
+      const file = await getFavIcon(icon);
+      const target = this.treeUrl + 'favicon/' + file.name;
 
-        const json = await server.request({
-          url: target,
-          method: "GET",
+      const json = await this.server.request({
+        url: target,
+        method: "GET",
+        format: 'json',
+      }).then(r => r.json());
+
+      // save favicon if nonexistent or emptied
+      if (json.data.type === null ||
+          (file.size > 0 && json.data.type === 'file' && json.data.size === 0)) {
+        await this.server.request({
+          url: target + '?a=save',
+          method: "POST",
           format: 'json',
-        }).then(r => r.json());
-
-        // save favicon if nonexistent or emptied
-        if (json.data.type === null || 
-            (file.size > 0 && json.data.type === 'file' && json.data.size === 0)) {
-          await server.request({
-            url: target + '?a=save',
-            method: "POST",
-            format: 'json',
-            csrfToken: true,
-            body: {
-              upload: file,
-            },
-          });
-        }
-
-        return scrapbook.getRelativeUrl(target, base);
-      } catch (ex) {
-        console.warn(ex);
-        capturer.warn(scrapbook.lang("ErrorFileDownloadError", [icon, ex.message]));
+          csrfToken: true,
+          body: {
+            upload: file,
+          },
+        });
       }
 
-      return icon;
+      return scrapbook.getRelativeUrl(target, base);
     }
   }
 

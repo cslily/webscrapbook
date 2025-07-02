@@ -5,16 +5,13 @@
  * @require {Object} scrapbook
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
   factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    window,
-    console,
+    global.isDebug,
+    global.scrapbook,
   );
-}(this, function (isDebug, browser, scrapbook, window, console) {
+}(this, function (isDebug, scrapbook) {
 
   'use strict';
 
@@ -31,7 +28,9 @@
     const elem = document.getElementById(OPTION_PREFIX + key);
     if (!elem) { return; }
 
-    if (elem.matches('input[type="checkbox"]')) {
+    if (elem.matches('input[type="hidden"]')) {
+      return JSON.parse(elem.value);
+    } else if (elem.matches('input[type="checkbox"]')) {
       return elem.checked;
     } else if (elem.matches('input[type="number"]')) {
       return elem.validity.valid && elem.value !== "" ? elem.valueAsNumber : null;
@@ -49,29 +48,15 @@
       if (!includeHidden) { return; }
 
       const wrapper = document.getElementById('options');
-      if (typeof value === 'string') {
-        elem = document.createElement('input');
-        elem.type = 'text';
-        elem.value = value;
-      } else if (typeof value === 'boolean') {
-        elem = document.createElement('input');
-        elem.type = 'checkbox';
-        elem.checked = value;
-      } else if (typeof value === 'number') {
-        elem = document.createElement('input');
-        elem.type = 'number';
-        elem.value = value;
-      } else if (value === null) {
-        // null is only used for an unset number
-        elem = document.createElement('input');
-        elem.type = 'number';
-      }
+      elem = document.createElement('input');
+      elem.type = 'hidden';
       elem.id = OPTION_PREFIX + key;
-      elem.hidden = true;
       wrapper.appendChild(elem);
     }
 
-    if (elem.matches('input[type="checkbox"]')) {
+    if (elem.matches('input[type="hidden"]')) {
+      elem.value = JSON.stringify(value);
+    } else if (elem.matches('input[type="checkbox"]')) {
       elem.checked = !!value;
     } else {
       elem.value = value;
@@ -97,23 +82,6 @@
   async function exportOptions() {
     const blob = new Blob([JSON.stringify(await scrapbook.getOptions(), null, 2)], {type: "application/json"});
     const filename = `webscrapbook.options.${scrapbook.dateToId().slice(0, 8)}.json`;
-
-    if (scrapbook.userAgent.is('gecko')) {
-      // Firefox has a bug that the screen turns unresponsive
-      // when an addon page is redirected to a blob URL.
-      // https://bugzilla.mozilla.org/show_bug.cgi?id=1420419
-      //
-      // Workaround by creating the anchor in an iframe.
-      const iDoc = document.getElementById('downloader').contentDocument;
-      const a = iDoc.createElement('a');
-      a.download = filename;
-      a.href = URL.createObjectURL(blob);
-      iDoc.body.appendChild(a);
-      a.click();
-      a.remove();
-      return;
-    }
-
     const elem = document.createElement('a');
     elem.download = filename;
     elem.href = URL.createObjectURL(blob);
@@ -123,8 +91,6 @@
   }
 
   async function importOptions(file) {
-    document.getElementById("import-input").value = null;
-
     try {
       const options = JSON.parse(await scrapbook.readFileAsText(file));
       for (const key in options) {
@@ -152,7 +118,7 @@
   }
 
   function getDetailStatusKey() {
-      return {table: "optionDetailStatus"};
+    return {table: "optionDetailStatus"};
   }
 
   async function loadDetailStatus() {
@@ -180,19 +146,19 @@
     renewCaptureSaveAsDetails();
     verifySaveFolder();
     verifySaveFilename();
-    renewCaptureDownLinkDetails();
     verifyDownLinkFileExtFilter();
     verifyDownLinkDocUrlFilter();
     verifyDownLinkUrlFilter();
     verifyCaptureHelpers();
     verifyAutoCapture();
+    renewServerUrlRequirement();
     document.getElementById('options').reportValidity();
   }
 
   function renewCaptureSaveToDetails() {
     const mode = document.getElementById("opt_capture.saveTo").value;
 
-    for (const elem of document.querySelectorAll('.captureScrapbookFolder')) {
+    for (const elem of document.querySelectorAll('.ui-captureScrapbookFolder')) {
       elem.hidden = mode !== 'folder';
     }
 
@@ -206,112 +172,62 @@
   function renewCaptureSaveAsDetails() {
     const mode = document.getElementById("opt_capture.saveAs").value;
 
-    for (const elem of document.querySelectorAll('.captureMergeCssResources')) {
+    for (const elem of document.querySelectorAll('.ui-captureMergeCssResources')) {
       elem.hidden = mode !== 'singleHtml';
     }
-    for (const elem of document.querySelectorAll('.captureSaveDataUriAsFile')) {
+    for (const elem of document.querySelectorAll('.ui-captureSaveDataUriAsFile')) {
       elem.hidden = mode === 'singleHtml';
-    }
-  }
-
-  function verifySavePath(elem) {
-    if (elem.value) {
-      // make sure it's a valid path for browser.downloads.download
-      elem.value = elem.value.split(/[\\\/]/).map(x => scrapbook.validateFilename(x)).join('/');
-    } else {
-      // reset value to placeholder
-      elem.value = elem.placeholder;
     }
   }
 
   function verifySaveFolder() {
     const elem = document.getElementById("opt_capture.saveFolder");
-    verifySavePath(elem);
+    if (elem.value) {
+      // make sure it's a valid path for browser.downloads.download
+      elem.value = scrapbook.parseOption("capture.saveFolder", elem.value);
+    } else {
+      elem.value = elem.placeholder;
+    }
   }
 
   function verifySaveFilename() {
     const elem = document.getElementById("opt_capture.saveFilename");
-    verifySavePath(elem);
-  }
-
-  function renewCaptureDownLinkDetails() {
-    var input = document.getElementById("opt_capture.downLink.file.mode");
-    for (const elem of document.querySelectorAll('.captureDownLinkFileExtFilter')) {
-      elem.hidden = elem.disabled = input.value === 'none';
+    if (elem.value) {
+      // make sure it's a valid path for browser.downloads.download
+      elem.value = scrapbook.parseOption("capture.saveFilename", elem.value);
+    } else {
+      elem.value = elem.placeholder;
     }
-
-    var input = document.getElementById("opt_capture.downLink.doc.depth");
-    for (const elem of document.querySelectorAll('.captureDownLinkDocUrlFilter')) {
-      elem.hidden = elem.disabled = !(input.valueAsNumber > 0);
-    }
-  }
-
-  function verifyDownLinkRules(srcText) {
-    const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
-    const fn = verifyDownLinkRules = (source) => {
-      // linefeeds are always '\n' for textarea value
-      const lines = source.split('\n');
-      for (let i = 0, I = lines.length; i < I; i++) {
-        let line = lines[i].trim();
-        if (!line || line.startsWith("#")) { continue; }
-
-        if (REGEX_PATTERN.test(line)) {
-          try {
-            new RegExp(RegExp.$1, RegExp.$2);
-          } catch (ex) {
-            return `Line ${i + 1}: ${ex.message}`;
-          }
-        }
-      }
-      return '';
-    };
-    return fn(srcText);
-  }
-
-  function verifyDownLinkUrlRules(srcText) {
-    const REGEX_SPACES = /\s+/;
-    const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
-    const fn = verifyDownLinkUrlRules = (source) => {
-      // linefeeds are always '\n' for textarea value
-      const lines = source.split('\n');
-      for (let i = 0, I = lines.length; i < I; i++) {
-        let line = lines[i].trim();
-        if (!line || line.startsWith("#")) { continue; }
-
-        line = line.split(REGEX_SPACES)[0];
-        if (REGEX_PATTERN.test(line)) {
-          try {
-            new RegExp(RegExp.$1, RegExp.$2);
-          } catch (ex) {
-            return `Line ${i + 1}: ${ex.message}`;
-          }
-        } else {
-          line = scrapbook.splitUrlByAnchor(line)[0];
-          try {
-            new URL(line);
-          } catch (ex) {
-            return `Line ${i + 1}: Invalid URL: ${line}`;
-          }
-        }
-      }
-      return '';
-    };
-    return fn(srcText);
   }
 
   function verifyDownLinkFileExtFilter() {
     const elem = document.getElementById("opt_capture.downLink.file.extFilter");
-    elem.setCustomValidity(verifyDownLinkRules(elem.value));
+    try {
+      scrapbook.parseOption("capture.downLink.file.extFilter", elem.value);
+      elem.setCustomValidity('');
+    } catch (ex) {
+      elem.setCustomValidity(ex.message);
+    }
   }
 
   function verifyDownLinkDocUrlFilter() {
     const elem = document.getElementById("opt_capture.downLink.doc.urlFilter");
-    elem.setCustomValidity(verifyDownLinkUrlRules(elem.value));
+    try {
+      scrapbook.parseOption("capture.downLink.doc.urlFilter", elem.value);
+      elem.setCustomValidity('');
+    } catch (ex) {
+      elem.setCustomValidity(ex.message);
+    }
   }
 
   function verifyDownLinkUrlFilter() {
     const elem = document.getElementById("opt_capture.downLink.urlFilter");
-    elem.setCustomValidity(verifyDownLinkUrlRules(elem.value));
+    try {
+      scrapbook.parseOption("capture.downLink.urlFilter", elem.value);
+      elem.setCustomValidity('');
+    } catch (ex) {
+      elem.setCustomValidity(ex.message);
+    }
   }
 
   function verifyCaptureHelpers() {
@@ -320,45 +236,12 @@
     const elem = document.getElementById("opt_capture.helpers");
     elem.required = enabled;
 
-    const json = elem.value;
-    if (json) {
-      try {
-        const configs = JSON.parse(json);
-        if (!Array.isArray(configs)) {
-          throw new Error('Invalid array');
-        }
-
-        for (let i = 0, I = configs.length; i < I; i++) {
-          try {
-            const config = configs[i];
-            if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-              throw new Error(`Invalid object`);
-            }
-            if (config.pattern) {
-              if (typeof config.pattern !== 'string') {
-                throw new Error(`Pattern must be a string`);
-              }
-              if (/^\/(.*)\/([a-z]*)$/.test(config.pattern)) {
-                try {
-                  new RegExp(RegExp.$1, RegExp.$2);
-                } catch (ex) {
-                  throw new Error(`Invalid pattern: ${ex.message}`);
-                }
-              } else {
-                throw new Error(`Invalid pattern: Unsupported format.`);
-              }
-            }
-          } catch (ex) {
-            throw new Error(`Helper[${i}]: ${ex.message}`);
-          }
-        }
-      } catch (ex) {
-        elem.setCustomValidity(ex.message);
-        return;
-      }
+    try {
+      scrapbook.parseOption("capture.helpers", elem.value);
+      elem.setCustomValidity('');
+    } catch (ex) {
+      elem.setCustomValidity(ex.message);
     }
-
-    elem.setCustomValidity('');
   }
 
   function verifyAutoCapture() {
@@ -367,45 +250,18 @@
     const elem = document.getElementById("opt_autocapture.rules");
     elem.required = enabled;
 
-    const json = elem.value;
-    if (json) {
-      try {
-        const configs = JSON.parse(json);
-        if (!Array.isArray(configs)) {
-          throw new Error('Invalid array');
-        }
-
-        for (let i = 0, I = configs.length; i < I; i++) {
-          try {
-            const config = configs[i];
-            if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-              throw new Error(`Invalid object`);
-            }
-            if (config.pattern) {
-              if (typeof config.pattern !== 'string') {
-                throw new Error(`Pattern must be a string`);
-              }
-              if (/^\/(.*)\/([a-z]*)$/.test(config.pattern)) {
-                try {
-                  new RegExp(RegExp.$1, RegExp.$2);
-                } catch (ex) {
-                  throw new Error(`Invalid pattern: ${ex.message}`);
-                }
-              } else {
-                throw new Error(`Invalid pattern: Unsupported format.`);
-              }
-            }
-          } catch (ex) {
-            throw new Error(`Config[${i}]: ${ex.message}`);
-          }
-        }
-      } catch (ex) {
-        elem.setCustomValidity(ex.message);
-        return;
-      }
+    try {
+      scrapbook.parseOption("autocapture.rules", elem.value);
+      elem.setCustomValidity('');
+    } catch (ex) {
+      elem.setCustomValidity(ex.message);
     }
+  }
 
-    elem.setCustomValidity('');
+  function renewServerUrlRequirement() {
+    const elem = document.getElementById("opt_server.url");
+    const required = document.getElementById("opt_capture.saveTo").value === 'server';
+    elem.required = required;
   }
 
   async function openIndexer() {
@@ -414,32 +270,17 @@
     if (getOptionFromDocument('indexer.fulltextCache')) {
       params.append('fulltext', 1);
     }
-    if (getOptionFromDocument('indexer.fulltextCacheFrameAsPageContent')) {
-      params.append('inclusive_frames', 1);
-    }
     if (getOptionFromDocument('indexer.fulltextCacheRecreate')) {
       params.append('recreate', 1);
     }
     if (getOptionFromDocument('indexer.createStaticSite')) {
       params.append('static_site', 1);
     }
-    if (getOptionFromDocument('indexer.createStaticIndex')) {
-      params.append('static_index', 1);
-    }
-    if (getOptionFromDocument('indexer.createRssFeed')) {
-      const rssRoot = getOptionFromDocument('indexer.createRssFeedBase') ||
-          getOptionFromDocument('server.url');
-      params.append('rss_root', rssRoot);
-      params.append('rss_item_count', getOptionFromDocument('indexer.createRssFeedCount'));
-    }
-    if (!getOptionFromDocument('indexer.makeBackup')) {
-      params.append('no_backup', 1);
-    }
+    params.append('backup', getOptionFromDocument('indexer.makeBackup') ? 1 : '');
 
     return await scrapbook.visitLink({
       url: u.href,
       newTab: true,
-      singleton: true,
     });
   }
 
@@ -479,14 +320,11 @@
     if (getOptionFromDocument('checker.resolveUnusedIcon')) {
       params.append('resolve_unused_icon', 1);
     }
-    if (!getOptionFromDocument('checker.makeBackup')) {
-      params.append('no_backup', 1);
-    }
+    params.append('backup', getOptionFromDocument('checker.makeBackup') ? 1 : '');
 
     return await scrapbook.visitLink({
       url: u.href,
       newTab: true,
-      singleton: true,
     });
   }
 
@@ -526,17 +364,32 @@
 
     // save options
     const keys = {};
+    const keysToRemove = [];
+
     for (const key in scrapbook.DEFAULT_OPTIONS) {
+      const value = getOptionFromDocument(key);
+
       // Overwrite only keys with a defined value so that
       // keys not listed in the options page are not nullified.
       // In Chromium, storageArea.set({key: undefined}) does not store to key.
       // In Firefox, storageArea.set({key: undefined}) stores null to key.
-      const value = getOptionFromDocument(key);
-      if (typeof value !== "undefined") {
-        keys[key] = value;
+      if (typeof value === "undefined") {
+        continue;
       }
+
+      // Remove the key if the value is identical to the default, so that the
+      // value will be updated if the default value changes in the future.
+      if (JSON.stringify(value) === JSON.stringify(scrapbook.DEFAULT_OPTIONS[key])) {
+        keysToRemove.push(key);
+        continue;
+      }
+
+      keys[key] = value;
     }
+
     await scrapbook.setOptions(keys);
+    await scrapbook.clearOptions(keysToRemove);
+
     return closeWindow();
   }
 
@@ -559,18 +412,21 @@
   async function onImportInputChange(event) {
     event.preventDefault();
     const file = event.target.files[0];
+    event.target.value = null;
     await importOptions(file);
     refreshForm();
   }
 
-  function onDetailsToggle(event) {
-    saveDetailStatus();
+  async function onCloudClick(event) {
+    event.preventDefault();
+    const u = new URL(browser.runtime.getURL("core/cloud.html"));
+    return await scrapbook.visitLink({
+      url: u.href,
+    });
   }
 
-  function onTooltipClick(event) {
-    event.preventDefault();
-    const elem = event.currentTarget;
-    toggleTooltip(elem);
+  function onDetailsToggle(event) {
+    saveDetailStatus();
   }
 
   function onInvalid(event) {
@@ -581,6 +437,12 @@
     }
   }
 
+  function onTooltipClick(event) {
+    event.preventDefault();
+    const elem = event.currentTarget;
+    toggleTooltip(elem);
+  }
+
   window.addEventListener("DOMContentLoaded", async (event) => {
     // load languages
     scrapbook.loadLanguages(document);
@@ -588,7 +450,7 @@
 
     // hide unsupported options
     if (!browser.browserAction || !browser.browserAction.setBadgeText) {
-      for (const elem of document.querySelectorAll('.uiNotifyPageCaptured')) {
+      for (const elem of document.querySelectorAll('.ui-uiNotifyPageCaptured')) {
         elem.hidden = true;
       }
     }
@@ -605,8 +467,6 @@
     document.getElementById("opt_capture.saveFolder").addEventListener("change", verifySaveFolder);
     document.getElementById("opt_capture.saveFilename").addEventListener("change", verifySaveFilename);
 
-    document.getElementById("opt_capture.downLink.file.mode").addEventListener("change", renewCaptureDownLinkDetails);
-    document.getElementById("opt_capture.downLink.doc.depth").addEventListener("change", renewCaptureDownLinkDetails);
     document.getElementById("opt_capture.downLink.file.extFilter").addEventListener("change", verifyDownLinkFileExtFilter);
     document.getElementById("opt_capture.downLink.doc.urlFilter").addEventListener("change", verifyDownLinkDocUrlFilter);
     document.getElementById("opt_capture.downLink.urlFilter").addEventListener("change", verifyDownLinkUrlFilter);
@@ -616,6 +476,8 @@
     document.getElementById("opt_autocapture.enabled").addEventListener("change", verifyAutoCapture);
     document.getElementById("opt_autocapture.rules").addEventListener("change", verifyAutoCapture);
 
+    document.getElementById("opt_capture.saveTo").addEventListener("change", renewServerUrlRequirement);
+
     document.getElementById("openIndexer").addEventListener("click", onOpenIndexerClick);
     document.getElementById("openChecker").addEventListener("click", onOpenCheckerClick);
 
@@ -624,17 +486,18 @@
     document.getElementById("export").addEventListener("click", onExportClick);
     document.getElementById("import").addEventListener("click", onImportClick);
     document.getElementById("import-input").addEventListener("change", onImportInputChange);
+    document.getElementById("cloud").addEventListener("click", onCloudClick);
 
-    for (const elem of document.querySelectorAll('details')) {
+    for (const elem of document.querySelectorAll('#optionsWrapper details')) {
       elem.addEventListener("toggle", onDetailsToggle);
+    }
+
+    for (const elem of document.querySelectorAll('#optionsWrapper :valid, #optionsWrapper :invalid')) {
+      elem.addEventListener("invalid", onInvalid);
     }
 
     for (const elem of document.querySelectorAll('a[data-tooltip]')) {
       elem.addEventListener("click", onTooltipClick);
-    }
-
-    for (const elem of document.querySelectorAll(':valid, :invalid')) {
-      elem.addEventListener("invalid", onInvalid);
     }
 
     // refresh form
@@ -642,4 +505,3 @@
   });
 
 }));
-

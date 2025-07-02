@@ -7,18 +7,14 @@
  * @public {Class} Tree
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  root.Tree = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.server,
-    window,
-    document,
-    console,
+  global.Tree = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
   );
-}(this, function (isDebug, browser, scrapbook, server, window, document, console) {
+}(this, function (isDebug, scrapbook, server) {
 
   'use strict';
 
@@ -108,6 +104,14 @@
       this.itemDragOverCallback = itemDragOverCallback;
       this.itemDropCallback = itemDropCallback;
 
+      // In Chromium mobile (e.g. Kiwi browser 98), there is missing
+      // event.dataTransfer causing DnD not functioning well.
+      // Disallow DnD to prevent a confusion.
+      // https://bugs.chromium.org/p/chromium/issues/detail?id=1266859
+      if (scrapbook.userAgent.is('chromium') && scrapbook.userAgent.is('mobile')) {
+        this.allowDrag = false;
+      }
+
       if (this.allowSelect) {
         this.treeElem.classList.add(TREE_CLASS_SELECTABLE);
       } else {
@@ -158,24 +162,84 @@
     getSelectedItemElems() {
       return Array.prototype.map.call(
         this.treeElem.querySelectorAll('.highlight'),
-        x => x.parentNode
+        x => x.parentNode,
       );
     }
 
     getParent(itemElem) {
-      return itemElem.parentNode.parentNode;
-    }
-
-    getParentAndIndex(itemElem) {
       const parentItemElem = itemElem.parentNode.parentNode;
-      const parentItemId = parentItemElem.getAttribute('data-id');
-      const siblingItems = parentItemElem.container.children;
-      const index = Array.prototype.indexOf.call(siblingItems, itemElem);
-      return {parentItemElem, parentItemId, siblingItems, index};
+      if (!this.rootElem.contains(parentItemElem)) {
+        return null;
+      }
+      return parentItemElem;
     }
 
-    getItemUrl(elem) {
-      const anchor = elem.anchor;
+    /**
+     * Get position index of an item element.
+     *
+     * According to a benchmark, counting previous elements (getIndex1) is
+     * faster than calling Array.indexOf on siblings for both Firefox (v114)
+     * and Google Chrome (v113).
+     *
+     *   function getIndex1(elem) {
+     *     let i = 0, e = elem;
+     *     while (e = e.previousElementSibling) { i++; }
+     *     return i;
+     *   }
+     *
+     *   function getIndex2(elem) {
+     *     const parent = elem.parentNode;
+     *     const siblings = parent.children;
+     *     return Array.prototype.indexOf.call(siblings, elem);
+     *   }
+     *
+     * @param {HTMLElement} itemElem
+     * @param {Map<HTMLElement~itemElem, integer~index>} [cacheMap] -
+     *     A cache Map for better performance when accessed many times at once.
+     * @return {integer}
+     */
+    getIndex(itemElem, cacheMap) {
+      let index = 0, elem = itemElem;
+      while (elem = elem.previousElementSibling) {
+        if (cacheMap) {
+          const prevIndex = cacheMap.get(elem);
+          if (typeof prevIndex !== 'undefined') {
+            index += prevIndex + 1;
+            break;
+          }
+        }
+        index++;
+      }
+      if (cacheMap) {
+        cacheMap.set(itemElem, index);
+      }
+      return index;
+    }
+
+    /**
+     * @param {HTMLElement} itemElem
+     * @param {Map<HTMLElement~itemElem, integer~index>} [cacheMap]
+     */
+    getParentAndIndex(itemElem, cacheMap) {
+      const parentItemElem = this.getParent(itemElem);
+      if (!parentItemElem) {
+        return {
+          parentItemElem: null,
+          parentItemId: null,
+          index: null,
+        };
+      }
+      const parentItemId = this.getItemId(parentItemElem);
+      const index = this.getIndex(itemElem, cacheMap);
+      return {parentItemElem, parentItemId, index};
+    }
+
+    getItemId(itemElem) {
+      return itemElem.getAttribute('data-id');
+    }
+
+    getItemUrl(itemElem) {
+      const anchor = itemElem.anchor;
       if (!anchor) { return ''; }
       return anchor.href;
     }
@@ -209,8 +273,18 @@
 
     /**
      * Add an item to DOM
+     *
+     * @param {Object} params
+     * @param {Object} params.item - item to add
+     * @param {HTMLElement} params.parent - parent to insert the item
+     * @param {?integer} [params.index] - non-integer to insert to last
+     * @return {HTMLLIElement}
      */
-    addItem(item, parent = this.rootElem.container, index = Infinity) {
+    addItem(item, parent = this.rootElem.container, index) {
+      if (!Number.isInteger(index)) {
+        index = Infinity;
+      }
+
       // create element
       const elem = document.createElement('li');
       const div = elem.controller = elem.appendChild(document.createElement('div'));
@@ -260,6 +334,9 @@
 
       if (meta.type !== 'separator') {
         var a = elem.anchor = div.appendChild(document.createElement('a'));
+        if (this.allowDrag) {
+          a.draggable = false;
+        }
         if (this.allowKeyboardNavigation) {
           a.setAttribute('tabindex', -1);
         }
@@ -303,14 +380,16 @@
         }
 
         var icon = a.insertBefore(document.createElement('img'), a.firstChild);
+        icon.draggable = false;
         if (meta.icon) {
-          icon.src = /^(?:[a-z][a-z0-9+.-]*:|[/])/i.test(meta.icon || '') ? 
-              meta.icon : 
+          icon.src = /^(?:[a-z][a-z0-9+.-]*:|[/])/i.test(meta.icon || '') ?
+              meta.icon :
               (this.book.dataUrl + scrapbook.escapeFilename(meta.index || '')).replace(/[/][^/]+$/, '/') + meta.icon;
         } else {
           icon.src = ITEM_TYPE_ICON[meta.type] || ITEM_TYPE_ICON[''];
         }
         icon.alt = '';
+        icon.loading = 'lazy';
       } else {
         var line = div.appendChild(document.createElement('fieldset'));
         line.title = (meta.title || '') + (meta.source ? '\n' + meta.source : '') + (meta.comment ? '\n\n' + meta.comment : '');
@@ -359,7 +438,7 @@
 
       if (ranged) {
         const itemElems = this.treeElem.querySelectorAll('li[data-id]');
-        let startElem = 
+        let startElem =
             this.treeElem.contains(this.lastHighlightElem) && !this.lastHighlightElem.closest('[hidden]') ? this.lastHighlightElem :
             this.treeElem.contains(this.anchorElem) && !this.anchorElem.closest('[hidden]') ? this.anchorElem :
             null;
@@ -391,6 +470,15 @@
       this.anchorItem(itemElem);
     }
 
+    scrollIntoView(itemElem) {
+      try {
+        itemElem.controller.scrollIntoView({block: "nearest", inline: "start"});
+      } catch (ex) {
+        // Firfox < 58: block: "nearest" is not supported
+        itemElem.controller.scrollIntoView({block: "start", inline: "start"});
+      }
+    }
+
     keyboardNavigation(event) {
       if (event.code === "ArrowUp") {
         event.preventDefault();
@@ -411,16 +499,14 @@
         }
 
         if (target) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(target, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(target, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(target, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(target);
           } else {
             this.highlightItem(target, true);
           }
-          target.scrollIntoView();
+          this.scrollIntoView(target);
         }
 
         return;
@@ -445,16 +531,14 @@
         }
 
         if (target) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(target, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(target, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(target, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(target);
           } else {
             this.highlightItem(target, true);
           }
-          target.scrollIntoView();
+          this.scrollIntoView(target);
         }
 
         return;
@@ -479,16 +563,14 @@
         }
 
         if (target) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(target, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(target, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(target, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(target);
           } else {
             this.highlightItem(target, true);
           }
-          target.scrollIntoView();
+          this.scrollIntoView(target);
         }
 
         return;
@@ -513,16 +595,14 @@
         }
 
         if (target) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(target, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(target, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(target, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(target);
           } else {
             this.highlightItem(target, true);
           }
-          target.scrollIntoView();
+          this.scrollIntoView(target);
         }
 
         return;
@@ -547,13 +627,14 @@
         }
 
         if (target) {
-          const willHighlight = event.shiftKey ? true : undefined;
-          const reselect = event.ctrlKey ? !this.allowMultiSelect :
+          const willHighlight = (this.allowMultiSelect && event.shiftKey) ? true : undefined;
+          const reselect = !this.allowMultiSelect ? true :
+              event.ctrlKey ? false :
               event.shiftKey ? true :
-              !(this.allowMultiSelect && this.allowMultiSelectOnClick);
+              !this.allowMultiSelectOnClick;
           const ranged = this.allowMultiSelect && event.shiftKey;
           this.highlightItem(target, willHighlight, {reselect, ranged});
-          target.scrollIntoView();
+          this.scrollIntoView(target);
         }
 
         return;
@@ -627,6 +708,7 @@
 
       const selectedItemElems = this.getSelectedItemElems();
 
+      const cacheMap = new Map();
       event.clipboardData.setData(
         'application/scrapbook.items+json',
         JSON.stringify({
@@ -638,18 +720,14 @@
           treeLastModified: this.book.treeLastModified,
 
           items: selectedItemElems.map(elem => {
-            const {parentItemId, index} = this.getParentAndIndex(elem);
-            return {
-              id: elem.getAttribute('data-id'),
-              parentId: parentItemId,
-              index,
-            };
+            const {parentItemId: parentId, index} = this.getParentAndIndex(elem, cacheMap);
+            return {id: this.getItemId(elem), parentId, index};
           }),
-        })
+        }),
       );
       event.clipboardData.setData(
         'text/plain',
-        selectedItemElems.map(x => x.getAttribute('data-id')).join('\r\n')
+        selectedItemElems.map(x => this.getItemId(x)).join('\r\n'),
       );
     }
 
@@ -667,7 +745,7 @@
       if (this.treeElem.contains(this.anchorElem) && !this.anchorElem.closest('[hidden]')) {
         const {parentItemId, index} = this.getParentAndIndex(this.anchorElem);
         targetId = parentItemId;
-        targetIndex = index + 1;
+        targetIndex = index;
       } else {
         targetId = this.rootId;
         targetIndex = Infinity;
@@ -696,6 +774,7 @@
       }
 
       // Firefox requires at least one data to get dragging work
+      const cacheMap = new Map();
       event.dataTransfer.setData(
         'application/scrapbook.items+json',
         JSON.stringify({
@@ -707,18 +786,14 @@
           treeLastModified: this.book.treeLastModified,
 
           items: selectedItemElems.map(elem => {
-            const {parentItemId, index} = this.getParentAndIndex(elem);
-            return {
-              id: elem.getAttribute('data-id'),
-              parentId: parentItemId,
-              index,
-            };
+            const {parentItemId: parentId, index} = this.getParentAndIndex(elem, cacheMap);
+            return {id: this.getItemId(elem), parentId, index};
           }),
-        })
+        }),
       );
       event.dataTransfer.setData(
         'text/plain',
-        selectedItemElems.map(x => x.getAttribute('data-id')).join('\r\n')
+        selectedItemElems.map(x => this.getItemId(x)).join('\r\n'),
       );
 
       // prevent mis-intereprated as a regular link
@@ -772,11 +847,11 @@
         const wrapperRect = wrapper.getBoundingClientRect();
         const pos = (event.clientY - wrapperRect.top) / wrapperRect.height;
 
-        if (pos < 1/3) {
+        if (pos < 1 / 3) {
           wrapper.classList.add('above');
           wrapper.classList.remove('below');
           wrapper.classList.remove('within');
-        } else if (pos > 2/3) {
+        } else if (pos > 2 / 3) {
           wrapper.classList.remove('above');
           wrapper.classList.add('below');
           wrapper.classList.remove('within');
@@ -827,23 +902,17 @@
       const itemElem = wrapper.parentNode;
       let targetId;
       let targetIndex;
-      if (pos < 1/3) {
+      if (pos < 1 / 3) {
         // above
-        const parentItemElem = itemElem.parentNode.parentNode;
-        const siblingItems = parentItemElem.container.children;
-        const index = Array.prototype.indexOf.call(siblingItems, itemElem);
-        targetId = parentItemElem.getAttribute('data-id');
-        targetIndex = index;
-      } else if (pos > 2/3) {
+        targetId = this.getItemId(this.getParent(itemElem));
+        targetIndex = this.getIndex(itemElem);
+      } else if (pos > 2 / 3) {
         // below
-        const parentItemElem = itemElem.parentNode.parentNode;
-        const siblingItems = parentItemElem.container.children;
-        const index = Array.prototype.indexOf.call(siblingItems, itemElem);
-        targetId = parentItemElem.getAttribute('data-id');
-        targetIndex = index + 1;
+        targetId = this.getItemId(this.getParent(itemElem));
+        targetIndex = this.getIndex(itemElem) + 1;
       } else {
         // within
-        targetId = itemElem.getAttribute('data-id');
+        targetId = this.getItemId(itemElem);
       }
 
       // invoke callback

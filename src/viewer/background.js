@@ -6,16 +6,14 @@
  * @public {Object} viewer
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('viewer')) { return; }
-  root.viewer = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    console,
+  if (global.hasOwnProperty('viewer')) { return; }
+  global.viewer = factory(
+    global.isDebug,
+    global.scrapbook,
   );
-}(this, function (isDebug, browser, scrapbook, console) {
+}(this, function (isDebug, scrapbook) {
 
   'use strict';
 
@@ -50,27 +48,11 @@
     newUrl.search = "?src=" + encodeURIComponent(url.href);
     newUrl = newUrl.href;
 
-    if (type === "main_frame") {
-      // Firefox < 56 does not allow redirecting a page to an extension page,
-      // even if whom is listed in web_accessible_resources.  The redirect
-      // fails silently without throwing.
-      //
-      // Using data URI with meta or javascript refresh works but generates
-      // an extra history entry.
-      if (scrapbook.userAgent.major < 56) {
-        browser.tabs.update(tabId, {url: newUrl});
-        return {cancel: true};
-      }
-    } else { // sub_frame
-      // In Chromium, an extension frame page whose top frame page is not an
-      // extension page cannot load a blob page in an iframe, which becomes
-      // empty silently.
-      // https://bugs.chromium.org/p/chromium/issues/detail?id=761341
-      //
-      // Firefox < 56 does not allow redirecting a page to an extension page,
-      // even if whom is listed in web_accessible_resources.  The redirect
-      // fails silently without throwing.
-      if (scrapbook.userAgent.is('chromium') || scrapbook.userAgent.major < 56) {
+    if (type === "sub_frame") {
+      // Chromium < 77: an extension page cannot be loaded in a frame and
+      // becomes empty silently if the top frame page is not an extension page.
+      // Chromium < 119: an extension page in a frame cannot access IndexedDB.
+      if (scrapbook.userAgent.is('chromium') && scrapbook.userAgent.major < 119) {
         const html = `<!DOCTYPE html>
 <html dir="${scrapbook.lang('@@bidi_dir')}">
 <head>
@@ -78,7 +60,7 @@
 <style>
 a {
   background: ${scrapbook.lang('@@bidi_start_edge')}/1em url("${scrapbook.escapeHtml(browser.runtime.getURL("core/scrapbook_128.png"))}") no-repeat;
-  padding-${scrapbook.lang('@@bidi_start_edge')}: 1em;
+  padding-inline-start: 1em;
 }
 </style>
 </head>
@@ -114,7 +96,7 @@ a {
           const contentDisposition = scrapbook.parseHeaderContentDisposition(header.value);
 
           // do not launch viewer if the file is marked to be downloaded
-          if (contentDisposition.type === 'attachment' && !scrapbook.getOption("viewer.viewAttachments")) {
+          if (contentDisposition.type !== "inline" && !scrapbook.getOption("viewer.viewAttachments")) {
             return;
           }
 
@@ -144,17 +126,24 @@ a {
     /* build a set with the ids that are still being viewed */
     const usedIds = new Set();
     for (const tab of tabs) {
-      const u = new URL(tab.url);
-      if (u.href.startsWith(browser.runtime.getURL("viewer/view.html") + '?')) {
-        const id = u.searchParams.get('id');
-        if (id) { usedIds.add(id); }
+      try {
+        const u = new URL(tab.url);
+        if (u.href.startsWith(browser.runtime.getURL("viewer/view.html") + '?')) {
+          const id = u.searchParams.get('id');
+          if (id) { usedIds.add(id); }
+        }
+      } catch (ex) {
+        console.error(ex);
       }
     }
 
     /* remove cache entry for all IDs that are not being viewed */
-    await scrapbook.cache.remove((obj) => {
-      return obj.table === 'pageCache' && !usedIds.has(obj.id);
-    });
+    const filter = {
+      includes: {table: 'pageCache'},
+      excludes: {id: usedIds},
+    };
+    await scrapbook.cache.removeAll(filter, 'indexedDB');
+    await scrapbook.cache.removeAll(filter, 'storage');
   }
 
   async function init() {

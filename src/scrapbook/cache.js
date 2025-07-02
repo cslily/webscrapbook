@@ -3,19 +3,17 @@
  * Script for cache.html
  *
  * @require {Object} scrapbook
+ * @require {Object} server
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
   factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    window,
-    document,
-    console,
+    global.isDebug,
+    global.scrapbook,
+    global.server,
   );
-}(this, function (isDebug, browser, scrapbook, window, document, console) {
+}(this, function (isDebug, scrapbook, server) {
 
   'use strict';
 
@@ -38,16 +36,12 @@
       await server.init();
 
       // handle URL actions
-      const params = new URL(document.URL).searchParams;
-      const u = new URL(server.serverRoot);
-      for (const [k, v] of params.entries()) {
-        u.searchParams.append(k, v);
-      }
-      u.searchParams.set('locale', scrapbook.lang('@@ui_locale'));
-      u.searchParams.set('a', 'cache');
+      const query = new URLSearchParams(new URL(document.URL).search);
+      query.set('a', 'cache');
+      query.set('locale', scrapbook.lang('@@ui_locale'));
 
       return await server.requestSse({
-        url: u.href,
+        query,
         onMessage(info) {
           log(info);
         },

@@ -11,19 +11,15 @@
  * @public {Class} BookTree
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  root.BookTree = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.server,
-    root.Tree,
-    window,
-    document,
-    console,
+  global.BookTree = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
+    global.Tree,
   );
-}(this, function (isDebug, browser, scrapbook, server, Tree, window, document, console) {
+}(this, function (isDebug, scrapbook, server, Tree) {
 
   'use strict';
 
@@ -59,14 +55,16 @@
       super.init(params);
     }
 
-    async rebuild() {
+    async rebuild({keepHighlights = true} = {}) {
+      const wrapper = this.treeElem.parentNode;
+
       // save scrolling
-      const {scrollLeft, scrollTop} = this.treeElem;
+      const {scrollLeft, scrollTop} = wrapper;
 
       // save current highlights
       let anchorElem = this.anchorElem;
       if (anchorElem) {
-        if (this.treeElem.contains(anchorElem)) {
+        if (this.treeElem.contains(anchorElem) && keepHighlights) {
           const map = new Map();
           this.getXpaths(anchorElem, map, {includeParents: false});
           for (const xpath of map.keys()) {
@@ -79,7 +77,7 @@
 
       let lastHighlightElem = this.lastHighlightElem;
       if (lastHighlightElem) {
-        if (this.treeElem.contains(lastHighlightElem)) {
+        if (this.treeElem.contains(lastHighlightElem) && keepHighlights) {
           const map = new Map();
           this.getXpaths(lastHighlightElem, map, {includeParents: false});
           for (const xpath of map.keys()) {
@@ -91,8 +89,10 @@
       }
 
       const highlights = new Map();
-      for (const elem of this.treeElem.querySelectorAll('.highlight')) {
-        this.getXpaths(elem.parentElement, highlights, {includeParents: false})
+      if (keepHighlights) {
+        for (const elem of this.treeElem.querySelectorAll('.highlight')) {
+          this.getXpaths(elem.parentElement, highlights, {includeParents: false});
+        }
       }
 
       // rebuild
@@ -127,8 +127,56 @@
       }
 
       // restore scrolling
-      this.treeElem.scrollLeft = scrollLeft;
-      this.treeElem.scrollTop = scrollTop;
+      wrapper.scrollLeft = scrollLeft;
+      wrapper.scrollTop = scrollTop;
+    }
+
+    /**
+     * @return {Object[]} item info from top to elem parent
+     */
+    getParents(itemElem, {includeIndex = false, cacheMap} = {}) {
+      let parents = [];
+      let specialRoot = false;
+      let elem = itemElem;
+      while (true) {
+        const parentItemElem = this.getParent(elem);
+        if (!parentItemElem) {
+          break;
+        }
+        const parentItemId = this.getItemId(parentItemElem);
+        const parent = {elem: parentItemElem, id: parentItemId};
+        if (includeIndex) {
+          parent.index = this.getIndex(elem, cacheMap);
+        }
+        parents.push(parent);
+        if (this.book.isSpecialItem(parentItemId)) {
+          specialRoot = true;
+          break;
+        }
+        elem = parentItemElem;
+      }
+      parents.reverse();
+      if (!specialRoot) {
+        // find and fill items from root to tree root
+        for (const root of this.book.specialItems) {
+          const path = this.book.findItemPaths(this.rootId, root).next().value;
+          if (path) {
+            parents = path.reduce((parents, {id, pos}, index, path) => {
+              // skip last
+              if (path[index + 1]) {
+                const parent = {elem: null, id};
+                if (includeIndex) {
+                  parent.index = path[index + 1].pos;
+                }
+                parents.push(parent);
+              }
+              return parents;
+            }, []).concat(parents);
+            break;
+          }
+        }
+      }
+      return parents;
     }
 
     getViewStatusKey() {
@@ -151,7 +199,18 @@
         selects,
       };
 
-      await scrapbook.cache.set(key, data, this.cacheType);
+      try {
+        await scrapbook.cache.set(key, data, this.cacheType);
+      } catch (ex) {
+        if (ex.name === 'QuotaExceededError') {
+          // In case the view status is too large (mostly for sessionStorage),
+          // clear the data to prevent loading the old value.
+          await scrapbook.cache.remove(key, this.cacheType);
+          console.warn('Cleared stored view status as the latest value is too large to store.');
+        } else {
+          throw ex;
+        }
+      }
     }
 
     async loadViewStatus() {
@@ -177,15 +236,19 @@
       const div = elem.controller;
 
       const toggler = elem.toggler = document.createElement('a');
+      if (this.allowDrag) {
+        toggler.draggable = false;
+      }
       if (this.allowKeyboardNavigation) {
         toggler.setAttribute('tabindex', -1);
       }
-      toggler.href = '#';
+      toggler.href = 'javascript:void(0)';
       toggler.className = 'toggle';
       toggler.addEventListener('click', this.onItemTogglerClick);
       div.insertBefore(toggler, div.firstChild);
 
       const togglerImg = document.createElement('img');
+      togglerImg.draggable = false;
       togglerImg.src = TOGGLER_ICON.collapsed;
       togglerImg.alt = '';
       toggler.appendChild(togglerImg);
@@ -199,22 +262,28 @@
     itemReduceContainer(elem) {
       if (elem === this.rootElem) { return; }
       if (!elem.container) { return; }
-      if (elem.container.hasAttribute('data-loaded') && !elem.container.hasChildNodes()) {
-        // remove toggler
-        if (this.treeElem.contains(elem.toggler)) {
-          elem.toggler.remove();
-        }
+      if (elem.container.hasChildNodes()) { return; }
 
-        // remove container
-        elem.container.remove();
-        delete elem.container;
+      if (!elem.container.hasAttribute('data-loaded')) {
+        const toc = this.book.toc[elem.getAttribute('data-id')];
+        if (toc && toc.length) {
+          return;
+        }
       }
+
+      // remove toggler
+      elem.toggler.remove();
+      delete elem.toggler;
+
+      // remove container
+      elem.container.remove();
+      delete elem.container;
     }
 
     /**
      * Add an item which is already in the scrapbook to the tree DOM
      */
-    addItem(id, parent, index = Infinity) {
+    addItem(id, parent, index) {
       const meta = this.book.meta[id];
       if (!meta) {
         return null;
@@ -242,7 +311,7 @@
       }
 
       // load child nodes if not loaded yet
-      if (willOpen)  {
+      if (willOpen) {
         this.loadChildren(elem);
       }
 
@@ -326,7 +395,7 @@
     insertItem(id, parentId, index) {
       for (const parentElem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(parentId)}"]`)) {
         this.itemMakeContainer(parentElem);
-        if (!parentElem.container.hasAttribute('data-loaded')) { return; }
+        if (!parentElem.container.hasAttribute('data-loaded')) { continue; }
         this.addItem(id, parentElem, index);
       }
     }
@@ -337,52 +406,58 @@
      * @param {HTMLElement[]} [itemElems] - Cached item elements in the tree for faster access.
      */
     removeItem(parentId, index, itemElems) {
-      Array.prototype.filter.call(
-        this.treeElem.querySelectorAll(`[data-id="${CSS.escape(parentId)}"]`),
-        (parentElem) => {
-          if (!(this.treeElem.contains(parentElem) && parentElem.container && parentElem.container.hasAttribute('data-loaded'))) { return; }
-          const itemElem = parentElem.container.children[index];
+      for (const parentElem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(parentId)}"]`)) {
+        if (!(this.treeElem.contains(parentElem) && parentElem.container)) {
+          continue;
+        }
 
-          // prepare for updating anchor elem if needed
-          const updateAnchor = itemElem === this.anchorElem;
-          let anchorIndex;
-          if (updateAnchor) {
-            if (!itemElems) {
-              itemElems = this.treeElem.querySelectorAll('li[data-id]');
+        if (!parentElem.container.hasAttribute('data-loaded')) {
+          this.itemReduceContainer(parentElem);
+          continue;
+        }
+
+        const itemElem = parentElem.container.children[index];
+
+        // prepare for updating anchor elem if needed
+        const updateAnchor = itemElem === this.anchorElem;
+        let anchorIndex;
+        if (updateAnchor) {
+          if (!itemElems) {
+            itemElems = this.treeElem.querySelectorAll('li[data-id]');
+          }
+          anchorIndex = Array.prototype.indexOf.call(itemElems, itemElem);
+        }
+
+        itemElem.remove();
+        this.itemReduceContainer(parentElem);
+
+        // update anchorElem
+        if (updateAnchor && anchorIndex >= 0) {
+          let anchorElem;
+
+          // look forward for a suitable element
+          for (let i = anchorIndex, I = itemElems.length; i < I; i++) {
+            if (this.treeElem.contains(itemElems[i]) && !itemElems[i].closest('[hidden]')) {
+              anchorElem = itemElems[i];
+              break;
             }
-            anchorIndex = Array.prototype.indexOf.call(itemElems, itemElem);
           }
 
-          itemElem.remove();
-          this.itemReduceContainer(parentElem);
-
-          // update anchorElem
-          if (updateAnchor && anchorIndex >= 0) {
-            let anchorElem;
-
-            // look forward for a suitable element
-            for (let i = anchorIndex, I = itemElems.length; i < I; i++) {
+          if (!anchorElem) {
+            // look backward for a suitable element if not found
+            for (let i = anchorIndex - 1; i >= 0; i--) {
               if (this.treeElem.contains(itemElems[i]) && !itemElems[i].closest('[hidden]')) {
                 anchorElem = itemElems[i];
                 break;
               }
             }
-
-            if (!anchorElem) {
-              // look backward for a suitable element if not found
-              for (let i = anchorIndex - 1; i >= 0; i--) {
-                if (this.treeElem.contains(itemElems[i]) && !itemElems[i].closest('[hidden]')) {
-                  anchorElem = itemElems[i];
-                  break;
-                }
-              }
-            }
-
-            if (anchorElem) {
-              this.anchorItem(anchorElem);
-            }
           }
-        });
+
+          if (anchorElem) {
+            this.anchorItem(anchorElem);
+          }
+        }
+      }
     }
 
     moveItem(id, currentParentId, currentIndex, targetParentId, targetIndex) {
@@ -392,15 +467,13 @@
         // When moving inside the same parent, we can simply re-insert each
         // item element to the new position since the number of parent elements
         // must match.
-        Array.prototype.filter.call(
-          this.treeElem.querySelectorAll(`[data-id="${CSS.escape(currentParentId)}"]`),
-          (parentElem) => {
-            if (!(this.treeElem.contains(parentElem) && parentElem.container && parentElem.container.hasAttribute('data-loaded'))) { return; }
-            const container = parentElem.container;
-            const itemElem = container.children[currentIndex];
-            itemElem.remove();  // remove itemElem to get container.children recalculated
-            container.insertBefore(itemElem, container.children[targetIndex]);
-          });
+        for (const parentElem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(currentParentId)}"]`)) {
+          if (!(this.treeElem.contains(parentElem) && parentElem.container && parentElem.container.hasAttribute('data-loaded'))) { continue; }
+          const container = parentElem.container;
+          const itemElem = container.children[currentIndex];
+          itemElem.remove();  // remove itemElem to get container.children recalculated
+          container.insertBefore(itemElem, container.children[targetIndex]);
+        }
       } else {
         // We can't simply insert elements to target parent since the number
         // of elements for currentParentId and targetParentId may not match.
@@ -430,7 +503,7 @@
         if (anchorElem.container && !anchorElem.container.hidden) {
           this.toggleItem(anchorElem, false);
           this.saveViewStatus();
-          anchorElem.scrollIntoView();
+          this.scrollIntoView(anchorElem);
           return;
         }
 
@@ -440,16 +513,14 @@
           parent = null;
         }
         if (parent) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(parent, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(parent, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(parent, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(parent);
           } else {
             this.highlightItem(parent, true);
           }
-          parent.scrollIntoView();
+          this.scrollIntoView(parent);
           return;
         }
 
@@ -469,34 +540,32 @@
         if (anchorElem.container && anchorElem.container.hidden) {
           this.toggleItem(anchorElem, true);
           this.saveViewStatus();
-          anchorElem.scrollIntoView();
+          this.scrollIntoView(anchorElem);
           return;
         }
 
         // move to first child
         const child = anchorElem.querySelector('li[data-id]');
         if (child) {
-          if (event.shiftKey && event.ctrlKey) {
-            this.highlightItem(child, true, {reselect: false, ranged: true});
-          } else if (event.shiftKey) {
-            this.highlightItem(child, true, {reselect: true, ranged: true});
+          if (this.allowMultiSelect && event.shiftKey) {
+            this.highlightItem(child, true, {reselect: !event.ctrlKey, ranged: true});
           } else if (event.ctrlKey) {
             this.anchorItem(child);
           } else {
             this.highlightItem(child, true);
           }
-          child.scrollIntoView();
+          this.scrollIntoView(child);
         }
 
         return;
       }
     }
 
-    async locate(id, paths) {
+    async locate(id, path) {
       // Attempt to find a match from currently visible items; othwise lookup in
       // the whole tree.
       let curElem;
-      for (const elem of this.treeElem.querySelectorAll(`[data-id="${scrapbook.escapeQuotes(id)}"]`)) {
+      for (const elem of this.treeElem.querySelectorAll(`[data-id="${CSS.escape(id)}"]`)) {
         if (elem.offsetParent) {
           curElem = elem;
           break;
@@ -504,8 +573,7 @@
       }
 
       if (!curElem) {
-        const path = paths[0];
-        curElem = this.treeElem.querySelector(`[data-id="${scrapbook.escapeQuotes(path[0].id)}"]`);
+        curElem = this.treeElem.querySelector(`[data-id="${CSS.escape(path[0].id)}"]`);
         for (let i = 1, I = path.length; i < I; ++i) {
           const {pos} = path[i];
           this.toggleItem(curElem, true);
@@ -514,7 +582,7 @@
       }
 
       // locate the item element
-      curElem.scrollIntoView();
+      this.scrollIntoView(curElem);
       this.highlightItem(curElem, true, {reselect: true});
       this.saveViewStatus();
     }

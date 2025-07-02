@@ -3,27 +3,30 @@
  * Background script for capturer functionality.
  *
  * @require {Object} scrapbook
+ * @require {Object} server
  * @public {Object} capturer
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('capturer')) { return; }
-  root.capturer = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    console,
+  if (global.hasOwnProperty('capturer')) { return; }
+  global.capturer = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
   );
-}(this, function (isDebug, browser, scrapbook, console) {
+}(this, function (isDebug, scrapbook, server) {
 
   'use strict';
 
   async function clearCapturerCaches() {
-    const tableSet = new Set(["captureMissionCache", "batchCaptureMissionCache", "fetchCache"]);
-    await scrapbook.cache.remove((obj) => {
-      return tableSet.has(obj.table);
-    });
+    const filter = {
+      includes: {
+        table: new Set(["captureMissionCache", "batchCaptureMissionCache", "fetchCache", "blobCache"]),
+      },
+    };
+    await scrapbook.cache.removeAll(filter, 'indexedDB');
+    await scrapbook.cache.removeAll(filter, 'storage');
   }
 
 
@@ -49,7 +52,7 @@
   }
 
   /**
-   * @return {integer[]} bookIds - id of books with a valid cache
+   * @return {string[]} bookIds - id of books with a valid cache
    */
   async function updateBookCaches() {
     if (scrapbook.hasServer()) {
@@ -71,9 +74,12 @@
           }
 
           // build cache for faster retrieval
+          // Check treeLastModified explicitly as `book.validateTree` may have
+          // been called otherwhere.
           let cache = bookCaches.get(bookId);
-          if (refresh || !cache) {
+          if (!(cache && cache.treeLastModified === book.treeLastModified)) {
             cache = new Map();
+            cache.treeLastModified = book.treeLastModified;
             bookCaches.set(bookId, cache);
 
             for (const id of book.getReachableItems('root')) {
@@ -145,7 +151,10 @@
       };
 
       // check from session
-      matchTypeAndCount.session += background.getCapturedUrls({urls: [urlCheck]})[urlCheck];
+      matchTypeAndCount.session += scrapbook.invokeBackgroundScript({
+        cmd: "getCapturedUrls",
+        args: {urls: [urlCheck]},
+      })[urlCheck];
 
       // check from backend
       for (const bookId of bookIds) {
@@ -228,8 +237,7 @@
       return;
     }
 
-    // Chromium 89 may get an incomplete tab list if currentWindow = false
-    const tabs = await scrapbook.getContentTabs({currentWindow: undefined});
+    const tabs = await scrapbook.getContentTabs({});
     return await updateBadgeForTabs(tabs);
   }
 
@@ -240,9 +248,8 @@
   }
 
   function toggleNotifyPageCaptured() {
-    // Firefox Android < 55: no browserAction
     // Firefox Android < 79 does not support setBadgeText
-    if (!browser.browserAction || !browser.browserAction.setBadgeText) {
+    if (!browser.browserAction.setBadgeText) {
       return;
     }
 
@@ -315,8 +322,6 @@
     // update book caches from backend
     const bookIds = await updateAutoCaptureBookCaches();
 
-    const isDuplicate = checkDuplicate(tabInfo.url, bookIds);
-
     // check config
     for (let i = 0, I = autoCaptureConfigs.length; i < I; ++i) {
       const config = autoCaptureConfigs[i];
@@ -332,12 +337,32 @@
           continue;
         }
 
-        // check pattern
-        if (config.pattern && !config.pattern.test(tabInfo.url)) {
-          continue;
+        // check pattern and exclude
+        if (config.pattern) {
+          let match = false;
+          for (const pattern of config.pattern) {
+            pattern.lastIndex = 0;
+            if (pattern.test(tabInfo.url)) {
+              match = true;
+              break;
+            }
+          }
+          if (!match) { continue; }
+        }
+        if (config.exclude) {
+          let match = false;
+          for (const exclude of config.exclude) {
+            exclude.lastIndex = 0;
+            if (exclude.test(tabInfo.url)) {
+              match = true;
+              break;
+            }
+          }
+          if (match) { continue; }
         }
 
         // skip if duplicated
+        const isDuplicate = checkDuplicate(tabInfo.url, bookIds);
         if (!config.allowDuplicate && isDuplicate) {
           continue;
         }
@@ -347,7 +372,7 @@
         if (!info) {
           info = {};
           autoCaptureInfos.set(tabInfo.id, info);
-        }        
+        }
 
         // setup capture task
         if (config.delay > 0) {
@@ -391,9 +416,12 @@
           }
 
           // build cache for faster retrieval
+          // Check treeLastModified explicitly as `book.validateTree` may have
+          // been called otherwhere.
           let cache = autoCaptureBookCaches.get(bookId);
-          if (refresh || !cache) {
+          if (!(cache && cache.treeLastModified === book.treeLastModified)) {
             cache = new Set();
+            cache.treeLastModified = book.treeLastModified;
             autoCaptureBookCaches.set(bookId, cache);
 
             for (const id of book.getReachableItems('root')) {
@@ -426,10 +454,13 @@
   }
 
   /**
-   * @param {integer[]} [bookIds] - ID of books with a valid cache
+   * @param {string[]} [bookIds] - ID of books with a valid cache
    */
   function checkDuplicate(url, bookIds) {
-    if (background.getCapturedUrls({urls: [url]})[url]) {
+    if (scrapbook.invokeBackgroundScript({
+      cmd: "getCapturedUrls",
+      args: {urls: [url]},
+    })[url]) {
       return true;
     }
 
@@ -466,7 +497,7 @@
     const taskInfo = Object.assign({
       autoClose: "always",
       tasks: [Object.assign({
-       tabId: tabInfo.id,
+        tabId: tabInfo.id,
       }, config.eachTaskInfo)],
     }, config.taskInfo);
 
@@ -474,6 +505,7 @@
       taskInfo,
       windowCreateData: {
         focused: false,
+        state: 'minimized',
       },
       tabCreateData: {
         active: false,
@@ -481,20 +513,7 @@
       waitForResponse: false,
     };
 
-    // Firefox does not support browser.windows.create({focused}),
-    // such call never returns.
-    // https://bugzilla.mozilla.org/show_bug.cgi?id=1213484
-    if (scrapbook.userAgent.is('gecko')) {
-      delete args.windowCreateData;
-    }
-
-    const captureTab = await scrapbook.invokeCaptureEx(args);
-    if (browser.windows) {
-      await browser.windows.update(captureTab.windowId, {
-        focused: false,
-        state: 'minimized',
-      });
-    }
+    await scrapbook.invokeCaptureEx(args);
 
     if (isRepeat) {
       return;
@@ -579,39 +598,11 @@
   }
 
   function configAutoCapture() {
-    const rulesText = scrapbook.getOption("autocapture.rules");
-
-    if (!rulesText) {
-      autoCaptureConfigs = [];
-      return;
-    }
-
     try {
-      autoCaptureConfigs = JSON.parse(rulesText);
-      if (!Array.isArray(autoCaptureConfigs)) {
-        throw new Error(`Configs is not an array.`);
-      }
+      autoCaptureConfigs = scrapbook.parseOption("autocapture.rules", scrapbook.getOption("autocapture.rules"));
     } catch (ex) {
-      console.error(`Skipped auto-capture config of due to invalid definition: ${ex.message}`);
+      console.error(`Ignored invalid auto-capture config: ${ex.message}`);
       autoCaptureConfigs = [];
-      return;
-    }
-
-    for (let i = 0, I = autoCaptureConfigs.length; i < I; ++i) {
-      const config = autoCaptureConfigs[i];
-
-      try {
-        if (typeof config !== 'object') {
-          throw new Error('Invalid object')
-        }
-        if (config.pattern) {
-          config.pattern = parseRegexStr(config.pattern);
-        }
-      } catch (ex) {
-        const nameStr = (config && config.name) ? ` (${config.name})` : '';
-        console.error(`Disabled auto-capture config[${i}]${nameStr}: ${ex.message}`);
-        autoCaptureConfigs[i] = {disabled: true};
-      }
     }
   }
 

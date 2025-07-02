@@ -6,28 +6,45 @@
  * @require {Object} server
  * @require {Class} CustomTree
  * @require {Class} MapWithDefault
+ * @public {Object} searchCaptures
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  root.searchCaptures = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.server,
-    root.CustomTree,
-    root.MapWithDefault,
-    window,
-    document,
-    console,
+  global.searchCaptures = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
+    global.CustomTree,
+    global.MapWithDefault,
   );
-}(this, function (isDebug, browser, scrapbook, server, CustomTree, MapWithDefault, window, document, console) {
+}(this, function (isDebug, scrapbook, server, CustomTree, MapWithDefault) {
 
   'use strict';
 
   const REGEX_IPv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 
+  const TREE_CLASS = 'tree-search-captures';
+
   class SearchTree extends CustomTree {
+    constructor(params) {
+      super(params);
+      this.treeElem.classList.add(TREE_CLASS);
+    }
+
+    init({book}) {
+      super.init({
+        book,
+        allowSelect: false,
+        allowMultiSelect: false,
+        allowMultiSelectOnClick: false,
+        allowAnchorClick: true,
+        allowDrag: false,
+        allowDrop: false,
+      });
+      this.treeElem.setAttribute('data-book-id', book.id);
+    }
+
     addItem(item) {
       const elem = super.addItem(item);
       const div = elem.controller;
@@ -94,7 +111,7 @@
 
         const results = await this.getSearchResults(urls, bookIds);
         this.showResults(results);
-      } catch(ex) {
+      } catch (ex) {
         console.error(ex);
         this.addMsg(scrapbook.lang('ErrorSearch', [ex.message]), 'error');
       };
@@ -195,19 +212,8 @@
 
         const wrapper = document.createElement('div');
 
-        const tree = new SearchTree({
-          treeElem: wrapper,
-          bookId,
-        });
-        tree.init({
-          book,
-          allowSelect: false,
-          allowMultiSelect: false,
-          allowMultiSelectOnClick: false,
-          allowAnchorClick: true,
-          allowDrag: false,
-          allowDrop: false,
-        });
+        const tree = new SearchTree({treeElem: wrapper});
+        tree.init({book});
         tree.rebuild();
 
         return tree;
@@ -260,7 +266,7 @@
     async onClickLocate(event) {
       event.preventDefault();
       const elem = event.currentTarget;
-      const bookId = elem.closest('[data-bookId]').getAttribute('data-bookId');
+      const bookId = elem.closest('[data-book-id]').getAttribute('data-book-id');
       const id = elem.closest('[data-id]').getAttribute('data-id');
       const response = await scrapbook.invokeExtensionScript({
         cmd: "background.locateItem",

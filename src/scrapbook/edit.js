@@ -4,20 +4,17 @@
  *
  * @require {Object} scrapbook
  * @require {Object} server
+ * @public {Object} editor
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  root.editor = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.server,
-    window,
-    document,
-    console,
+  global.editor = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
   );
-}(this, function (isDebug, browser, scrapbook, server, window, document, console) {
+}(this, function (isDebug, scrapbook, server) {
 
   'use strict';
 
@@ -34,23 +31,27 @@
       try {
         const params = new URL(document.URL).searchParams;
         const id = this.id = params.get('id');
-        const bookId = this.bookId = params.get('bookId');
+        let bookId = this.bookId = params.get('bookId');
         let file = params.get('file');
         let checkRedirect = !file;
 
         await scrapbook.loadOptionsAuto;
         await server.init();
 
+        if (typeof bookId !== 'string') {
+          bookId = server.bookId;
+        }
+
         const book = server.books[bookId];
         if (!book) {
-          throw new Error(`Specified book "${bookId}" does not exist.`);
+          throw new Error(`Book "${bookId}" does not exist.`);
         }
 
         const meta = await book.loadMeta();
 
         const item = meta[id];
         if (!item) {
-          throw new Error(`Specified item "${id}" does not exist.`);
+          throw new Error(`Item "${id}" does not exist.`);
         }
 
         file = file || item.index;
@@ -62,7 +63,7 @@
 
         try {
           let target = this.target = checkRedirect ?
-            await book.getItemIndexUrl(item) : 
+            await book.getItemIndexUrl(item) :
             book.dataUrl + scrapbook.escapeFilename(file);
 
           const text = await server.request({
@@ -93,11 +94,9 @@
 
         await book.transaction({
           mode: 'refresh',
-          callback: async (book, updated) => {
+          callback: async (book, {updated}) => {
             const meta = await book.loadMeta(updated);
-
-            const item = meta[id];
-            if (!item) {
+            if (!meta[id]) {
               throw new Error(`Specified item "${id}" does not exist.`);
             }
 
@@ -113,30 +112,26 @@
               },
             });
 
-            // update item
-            item.modify = scrapbook.dateToId();
-            await book.saveMeta();
-
-            if (scrapbook.getOption("indexer.fulltextCache")) {
-              await server.requestSse({
-                query: {
-                  "a": "cache",
-                  "book": book.id,
-                  "item": item.id,
-                  "fulltext": 1,
-                  "inclusive_frames": scrapbook.getOption("indexer.fulltextCacheFrameAsPageContent"),
-                  "no_lock": 1,
-                  "no_backup": 1,
-                },
-                onMessage(info) {
-                  if (['error', 'critical'].includes(info.type)) {
-                    alert(`Error when updating fulltext cache: ${info.msg}`);
-                  }
-                },
-              });
-            }
-
-            await book.loadTreeFiles(true);  // update treeLastModified
+            // update book
+            await server.request({
+              query: {
+                a: 'query',
+                lock: '',
+              },
+              body: {
+                q: JSON.stringify({
+                  book: book.id,
+                  cmd: 'update_item',
+                  kwargs: {
+                    item: {id},
+                  },
+                }),
+                auto_cache: JSON.stringify(scrapbook.autoCacheOptions()),
+              },
+              method: 'POST',
+              format: 'json',
+              csrfToken: true,
+            });
           },
         });
       } catch (ex) {
@@ -185,13 +180,13 @@
     scrapbook.loadLanguages(document);
 
     document.getElementById('btn-save').addEventListener('click', (event) => {
-       editor.save();
+      editor.save();
     });
     document.getElementById('btn-locate').addEventListener('click', (event) => {
-       editor.locate();
+      editor.locate();
     });
     document.getElementById('btn-exit').addEventListener('click', (event) => {
-       editor.exit();
+      editor.exit();
     });
 
     editor.init();

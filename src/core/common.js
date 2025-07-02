@@ -7,43 +7,61 @@
  * @public {Object} scrapbook
  *****************************************************************************/
 
-/**
- * Polyfills
- */
-
-// Polyfill for Firefox < 53
-// As shadowRoot is not supported, we can simply skip implementing options.
-if (Node && !Node.prototype.getRootNode) {
-  Node.prototype.getRootNode = function getRootNode(options) {
-    var current = this, parent;
-    while (parent = current.parentNode) {
-      current = parent;
-    }
-    return current;
+// Polyfill for Chrome < 119 and Firefox < 121
+if (typeof Promise.withResolvers === 'undefined') {
+  Promise.withResolvers = function () {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return {promise, resolve, reject};
   };
 }
 
-(function (root, factory) {
-  // Browser globals
-  if (root.hasOwnProperty('scrapbook')) { return; }
-  root.scrapbook = factory(
-    root.isDebug,
-    root.browser,
-    root.JSZip,
-    root.jsSHA,
-    root.Mime,
-    root.Strftime,
-    window,
-    console,
-    crypto,
-    navigator,
-  );
-}(this, function (isDebug, browser, JSZip, jsSHA, Mime, Strftime, window, console, crypto, navigator) {
+(function (global, factory) {
+  global = typeof globalThis !== "undefined" ? globalThis : global || self;
+  if (typeof exports === "object" && typeof module === "object") {
+    // CommonJS
+    module.exports = factory(
+      global,
+      global.isDebug,
+      require('../lib/jszip'),
+      require('../lib/sha'),
+      require('../lib/mime'),
+      require('../lib/strftime'),
+    );
+  } else if (typeof define === "function" && define.amd) {
+    // AMD
+    define(
+      ['../lib/jszip', '../lib/sha', '../lib/mime', '../lib/strftime'],
+      (...args) => factory(
+        global,
+        global.isDebug,
+        ...args,
+      ),
+    );
+  } else {
+    // Browser globals
+    if (global.hasOwnProperty('scrapbook')) { return; }
+    global.scrapbook = factory(
+      global,
+      global.isDebug,
+      global.JSZip,
+      global.jsSHA,
+      global.Mime,
+      global.Strftime,
+    );
+  }
+}(this, function (global, isDebug, JSZip, jsSHA, Mime, Strftime) {
 
   'use strict';
 
-  const BACKEND_MIN_VERSION = '0.36.0';
+  const BACKEND_MIN_VERSION = '2.6.0';
 
+  /**
+   * @typedef {Object} scrapbookOptions
+   */
   const DEFAULT_OPTIONS = {
     "ui.toolbar.showCaptureTab": true,
     "ui.toolbar.showCaptureTabSource": true,
@@ -56,15 +74,23 @@ if (Node && !Node.prototype.getRootNode) {
     "ui.toolbar.showOpenScrapBook": true,
     "ui.toolbar.showOpenViewer": true,
     "ui.toolbar.showOpenOptions": true,
+    "ui.autoCloseBrowserAction": true,
     "ui.showContextMenu": true,
     "ui.autoCloseCaptureDialog": "none", // "none", "nowarn", "noerror", "nofailure", "always"
-    "ui.notifyPageCaptured": false,
+    "ui.notifyPageCaptured": true,
+    "ui.screen.left": 0,
+    "ui.screen.top": 0,
+    "ui.screen.width": 1920,
+    "ui.screen.height": 1080,
     "server.url": "",
     "server.user": "",
     "server.password": "",
     "capture.serverUploadWorkers": 4,
-    "capture.serverUploadRetryCount": 2,
+    "capture.serverUploadRetryCount": 3,
     "capture.serverUploadRetryDelay": 2000,
+    "capture.downloadWorkers": 4,
+    "capture.downloadRetryCount": 3,
+    "capture.downloadRetryDelay": 1000,
     "capture.saveTo": "folder", // "server", "folder", "file", "memory"
     "capture.saveFolder": "WebScrapBook/data",
     "capture.saveAs": "folder", // "folder", "zip", "maff", "singleHtml"
@@ -81,6 +107,7 @@ if (Node && !Node.prototype.getRootNode) {
     "capture.image": "save", // "save", "save-current", "link", "blank", "remove"
     "capture.imageBackground": "save-used", // "save", "save-used", "link", "blank"
     "capture.favicon": "save", // "save", "link", "blank", "remove"
+    "capture.faviconAttrs": "",
     "capture.canvas": "save", // "save", "blank", "remove"
     "capture.audio": "save", // "save", "save-current", "link", "blank", "remove"
     "capture.video": "save", // "save", "save-current", "link", "blank", "remove"
@@ -97,20 +124,24 @@ if (Node && !Node.prototype.getRootNode) {
     "capture.script": "remove", // "save", "link", "blank", "remove"
     "capture.noscript": "save", // "save", "blank", "remove"
     "capture.contentSecurityPolicy": "remove", // "save", "remove"
+    "capture.ping": "blank", // "link", "blank"
     "capture.preload": "remove", // "blank", "remove"
     "capture.prefetch": "remove", // "blank", "remove"
     "capture.base": "blank", // "save", "blank", "remove"
     "capture.formStatus": "keep", // "save-all", "save", "keep-all", "keep", "html-all", "html", "reset"
     "capture.shadowDom": "save", // "save", "remove"
+    "capture.adoptedStyleSheet": "save", // "save", "remove"
     "capture.removeHidden": "none", // "none", "undisplayed"
     "capture.linkUnsavedUri": false,
     "capture.downLink.file.mode": "none", // "none", "url", "header"
     "capture.downLink.file.extFilter": "###image\n#bmp, gif, ico, jpg, jpeg, jpe, jp2, png, tif, tiff, svg\n###audio\n#aac, ape, flac, mid, midi, mp3, ogg, oga, ra, ram, rm, rmx, wav, wma\n###video\n#avc, avi, flv, mkv, mov, mpg, mpeg, mp4, wmv\n###archive\n#zip, rar, jar, bz2, gz, tar, rpm, 7z, 7zip, xz, jar, xpi, lzh, lha, lzma\n#/z[0-9]{2}|r[0-9]{2}/\n###document\n#pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, odg, odf, rtf, txt, csv\n###executable\n#exe, msi, dmg, bin, xpi, iso\n###any non-web-page\n#/(?!$|html?|xht(ml)?|php|py|pl|aspx?|cgi|jsp)(.*)/i",
     "capture.downLink.doc.depth": null,
     "capture.downLink.doc.delay": null,
+    "capture.downLink.doc.mode": "source", // "tab", "source"
     "capture.downLink.doc.urlFilter": "",
     "capture.downLink.urlFilter": "###skip common logout URL\n/[/=]logout\\b/i",
-    "capture.referrerPolicy": "strict-origin-when-cross-origin", // "no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"
+    "capture.downLink.urlExtra": "",
+    "capture.referrerPolicy": "", // "", "no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"; prepend "+" to force
     "capture.referrerSpoofSource": false,
     "capture.recordDocumentMeta": true,
     "capture.recordRewrites": false,
@@ -145,12 +176,7 @@ if (Node && !Node.prototype.getRootNode) {
     "viewer.viewMaff": true,
     "viewer.viewAttachments": false,
     "indexer.createStaticSite": false,
-    "indexer.createStaticIndex": false,
-    "indexer.createRssFeed": false,
-    "indexer.createRssFeedBase": "",
-    "indexer.createRssFeedCount": 50,
     "indexer.fulltextCache": true,
-    "indexer.fulltextCacheFrameAsPageContent": true,
     "indexer.fulltextCacheRecreate": false,
     "indexer.makeBackup": false,
     "checker.resolveInvalidId": true,
@@ -165,6 +191,7 @@ if (Node && !Node.prototype.getRootNode) {
     "checker.resolveAbsoluteIcon": true,
     "checker.resolveUnusedIcon": true,
     "checker.makeBackup": true,
+    "scrapbook.itemPicker.recentItemsMax": 10,
     "scrapbook.sidebarOpenInNewTab": false,
     "scrapbook.sidebarSourceInNewTab": false,
     "scrapbook.sidebarViewTextInNewTab": false,
@@ -173,24 +200,253 @@ if (Node && !Node.prototype.getRootNode) {
     "scrapbook.sidebarSearchInNewTab": true,
     "scrapbook.copyItemInfoFormatPlain": "%id%",
     "scrapbook.copyItemInfoFormatHtml": "",
+    "scrapbook.export.recursive": true,
+    "scrapbook.export.nonSingleton": true,
+    "scrapbook.import.rebuildFolders": true,
+    "scrapbook.import.resolveItemUsedNew": true,
     "scrapbook.transactionAutoBackup": true,
+    "scrapbook.useBrowserSidebars": true,
+    "scrapbook.autoRebuildSidebars": true,
     "scrapbook.defaultSearch": "-type:folder -type:separator",
     "scrapbook.searchCommentLength": 100,
     "scrapbook.searchContextLength": 120,
     "scrapbook.searchSourceLength": null,
-    "scrapbook.fulltextCacheRemoteSizeLimit": null,
+    "scrapbook.searchSse": false,
     "scrapbook.fulltextCacheUpdateThreshold": 5 * 24 * 60 * 60 * 1000,
+    "scrapbook.autoCache.fulltextCache": true,
+    "scrapbook.autoCache.createStaticSite": false,
     "geolocation.enableHighAccuracy": true,
     "geolocation.timeout": 3000,
     "geolocation.maximumAge": 0,
     "geolocation.mapUrl": "https://maps.google.com/?q=%latitude%,%longitude%",
   };
 
+  const OPTION_PARSERS = {
+    "capture.saveFolder": (source) => {
+      return source.split(/[\\/]/).map(x => scrapbook.validateFilename(x)).join('/');
+    },
+    "capture.saveFilename": (source) => {
+      return source.split(/[\\/]/).map(x => scrapbook.validateFilename(x)).join('/');
+    },
+    "capture.downLink.file.extFilter": (...args) => {
+      const PREFIX_MIME = 'mime:';
+      const REGEX_LINEFEED = /\n|\r\n?/;
+      const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
+      const REGEX_EXT_SEP = /[,;\s]+/;
+      const fn = OPTION_PARSERS["capture.downLink.file.extFilter"] = (source) => {
+        const rv = {ext: [], mime: []};
+        const lines = source.split(REGEX_LINEFEED);
+        for (let i = 0, I = lines.length; i < I; i++) {
+          let line = lines[i];
+          if (!line || line.startsWith("#")) { continue; }
+
+          if (line.startsWith(PREFIX_MIME)) {
+            line = line.slice(PREFIX_MIME.length);
+            if (REGEX_PATTERN.test(line)) {
+              try {
+                rv.mime.push(new RegExp(`^(?:${RegExp.$1})$`, RegExp.$2));
+              } catch (ex) {
+                throw new Error(`Line ${i + 1}: ${ex.message}`);
+              }
+            } else {
+              rv.mime.push(new RegExp(`^(?:${scrapbook.escapeRegExp(line)})$`, 'i'));
+            }
+            continue;
+          }
+
+          if (REGEX_PATTERN.test(line)) {
+            try {
+              rv.ext.push(new RegExp(`^(?:${RegExp.$1})$`, RegExp.$2));
+            } catch (ex) {
+              throw new Error(`Line ${i + 1}: ${ex.message}`);
+            }
+          } else {
+            const regex = line.split(REGEX_EXT_SEP)
+              .filter(x => !!x)
+              .map(x => scrapbook.escapeRegExp(x))
+              .join('|');
+            rv.ext.push(new RegExp(`^(?:${regex})$`, 'i'));
+          }
+        }
+        return rv;
+      };
+      return fn(...args);
+    },
+    "capture.downLink.doc.urlFilter": (...args) => {
+      return OPTION_PARSERS["capture.downLink.urlFilter"](...args);
+    },
+    "capture.downLink.urlFilter": (...args) => {
+      const REGEX_LINEFEED = /\n|\r\n?/;
+      const REGEX_SPACES = /\s+/;
+      const REGEX_PATTERN = /^\/(.*)\/([a-z]*)$/;
+      const fn = OPTION_PARSERS["capture.downLink.urlFilter"] = (source) => {
+        const rv = [];
+        const lines = source.split(REGEX_LINEFEED);
+        for (let i = 0, I = lines.length; i < I; i++) {
+          const line = lines[i];
+          if (!line || line.startsWith("#")) { continue; }
+
+          let rule = line.split(REGEX_SPACES)[0];
+          if (!rule) { continue; }
+
+          if (REGEX_PATTERN.test(rule)) {
+            try {
+              rv.push(new RegExp(RegExp.$1, RegExp.$2));
+            } catch (ex) {
+              throw new Error(`Line ${i + 1}: ${ex.message}`);
+            }
+          } else {
+            rule = scrapbook.splitUrlByAnchor(rule)[0];
+            rv.push(rule);
+          }
+        }
+        return rv;
+      };
+      return fn(...args);
+    },
+    "capture.downLink.urlExtra": (...args) => {
+      const REGEX_LINEFEED = /\n|\r\n?/;
+      const REGEX_SPACES = /\s+/;
+      const fn = OPTION_PARSERS["capture.downLink.urlExtra"] = (source) => {
+        const rv = [];
+        const lines = source.split(REGEX_LINEFEED);
+        for (let i = 0, I = lines.length; i < I; i++) {
+          const line = lines[i];
+          if (!line || line.startsWith("#")) { continue; }
+
+          let rule = line.split(REGEX_SPACES)[0];
+          if (!rule) { continue; }
+
+          rule = scrapbook.splitUrlByAnchor(rule)[0];
+          rv.push(rule);
+        }
+        return rv;
+      };
+      return fn(...args);
+    },
+    "capture.helpers": (source) => {
+      if (!source) {
+        return [];
+      }
+
+      const configs = JSON.parse(source);
+      if (!Array.isArray(configs)) {
+        throw new Error('Invalid array');
+      }
+
+      for (let i = 0, I = configs.length; i < I; i++) {
+        try {
+          const config = configs[i];
+          if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+            throw new Error(`Invalid object`);
+          }
+          if (config.pattern) {
+            if (typeof config.pattern !== 'string') {
+              throw new Error(`Pattern must be a string`);
+            }
+            if (/^\/(.*)\/([a-z]*)$/.test(config.pattern)) {
+              try {
+                config.pattern = new RegExp(RegExp.$1, RegExp.$2);
+              } catch (ex) {
+                throw new Error(`Invalid pattern: ${ex.message}`);
+              }
+            } else {
+              throw new Error(`Invalid pattern: Unsupported format.`);
+            }
+          }
+        } catch (ex) {
+          throw new Error(`Helpers[${i}]: ${ex.message}`);
+        }
+      }
+
+      return configs;
+    },
+    "autocapture.rules": (source) => {
+      if (!source) {
+        return [];
+      }
+
+      const configs = JSON.parse(source);
+      if (!Array.isArray(configs)) {
+        throw new Error('Invalid array');
+      }
+
+      const patternParseRegex = /^\/(.*)\/([a-z]*)$/;
+      for (let i = 0, I = configs.length; i < I; i++) {
+        try {
+          const config = configs[i];
+          if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+            throw new Error(`Invalid object`);
+          }
+          if (config.pattern) {
+            if (typeof config.pattern === 'string') {
+              if (patternParseRegex.test(config.pattern)) {
+                try {
+                  config.pattern = [new RegExp(RegExp.$1, RegExp.$2)];
+                } catch (ex) {
+                  throw new Error(`Invalid pattern: ${ex.message}`);
+                }
+              } else {
+                throw new Error(`Invalid pattern: Unsupported format.`);
+              }
+            } else if (Array.isArray(config.pattern)) {
+              for (let j = 0, J = config.pattern.length; j < J; j++) {
+                const subpattern = config.pattern[j];
+                if (patternParseRegex.test(subpattern)) {
+                  try {
+                    config.pattern[j] = new RegExp(RegExp.$1, RegExp.$2);
+                  } catch (ex) {
+                    throw new Error(`Invalid pattern[${j}]: ${ex.message}`);
+                  }
+                } else {
+                  throw new Error(`Invalid pattern[${j}]: Unsupported format.`);
+                }
+              }
+            } else {
+              throw new Error(`Pattern must be a string or an array of strings.`);
+            }
+          }
+          if (config.exclude) {
+            if (typeof config.exclude === 'string') {
+              if (patternParseRegex.test(config.exclude)) {
+                try {
+                  config.exclude = [new RegExp(RegExp.$1, RegExp.$2)];
+                } catch (ex) {
+                  throw new Error(`Invalid exclude: ${ex.message}`);
+                }
+              } else {
+                throw new Error(`Invalid exclude: Unsupported format.`);
+              }
+            } else if (Array.isArray(config.exclude)) {
+              for (let j = 0, J = config.exclude.length; j < J; j++) {
+                const subexclude = config.exclude[j];
+                if (patternParseRegex.test(subexclude)) {
+                  try {
+                    config.exclude[j] = new RegExp(RegExp.$1, RegExp.$2);
+                  } catch (ex) {
+                    throw new Error(`Invalid exclude[${j}]: ${ex.message}`);
+                  }
+                } else {
+                  throw new Error(`Invalid exclude[${j}]: Unsupported format.`);
+                }
+              }
+            } else {
+              throw new Error(`Exclude must be a string or an array of strings.`);
+            }
+          }
+        } catch (ex) {
+          throw new Error(`Configs[${i}]: ${ex.message}`);
+        }
+      }
+
+      return configs;
+    },
+  };
+
   const CONTENT_SCRIPT_FILES = [
     "/lib/browser-polyfill.js",
     "/lib/mime.js",
-    "/lib/sha_dev.js",
-    "/lib/deferred.js",
+    "/lib/sha.js",
     "/lib/map-with-default.js",
     "/lib/strftime.js",
     "/core/common.js",
@@ -198,7 +454,7 @@ if (Node && !Node.prototype.getRootNode) {
     "/core/content.js",
     "/capturer/common.js",
     "/editor/content.js",
-    ];
+  ];
 
   const HTTP_STATUS_TEXT = {
     // 1××: Informational
@@ -273,6 +529,24 @@ if (Node && !Node.prototype.getRootNode) {
     511: "Network Authentication Required",
   };
 
+  const COMPRESSIBLE_TYPES = new Set([
+    'application/xml',
+
+    // historical non-text/* javascript types
+    // ref: https://mimesniff.spec.whatwg.org/
+    'application/javascript',
+    'application/ecmascript',
+    'application/x-ecmascript',
+    'application/x-javascript',
+
+    'application/json',
+  ]);
+
+  const COMPRESSIBLE_SUFFIXES = new Set([
+    '+xml',
+    '+json',
+  ]);
+
   const DOMPARSER_SUPPORT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/xml', 'application/xml', 'image/svg+xml']);
 
   const SCRAPBOOK_OBJECT_REMOVE_TYPE_REMOVE = new Set(["annotation", "freenote", "sticky", "block-comment", "custom"]);
@@ -289,7 +563,7 @@ if (Node && !Node.prototype.getRootNode) {
 }
 [data-scrapbook-elem="sticky"].styled {
   position: absolute;
-  z-index: 500000;
+  z-index: 2147483647;
   opacity: .95;
   box-sizing: border-box;
   margin: 0;
@@ -315,10 +589,22 @@ if (Node && !Node.prototype.getRootNode) {
 }
 [data-scrapbook-elem="sticky"].dragging {
   opacity: .75;
-  z-index: 2147483641;
 }
 `;
 
+  const ASCII_WHITESPACE = String.raw`\t\n\f\r `;
+
+  // https://dom.spec.whatwg.org/#valid-shadow-host-name
+  const VALID_SHADOW_HOST_NAMES = new Set([
+    "article", "aside", "blockquote", "body", "div", "footer",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "header", "main", "nav", "p", "section", "span",
+  ]);
+
+  /**
+   * @global
+   * @namespace
+   */
   const scrapbook = {
     BACKEND_MIN_VERSION,
     DEFAULT_OPTIONS,
@@ -331,7 +617,14 @@ if (Node && !Node.prototype.getRootNode) {
      */
     get userAgent() {
       const ua = navigator.userAgent;
-      const manifest = browser.runtime.getManifest();
+      const manifest = (() => {
+        try {
+          return browser.runtime.getManifest();
+        } catch (ex) {
+          // dummy object to prevent an error
+          return {};
+        }
+      })();
 
       const soup = new Set(['webext']);
       const flavor = {
@@ -340,31 +633,14 @@ if (Node && !Node.prototype.getRootNode) {
         is: (value) => soup.has(value),
       };
 
-      const dispatch = function() {
-        window.dispatchEvent(new CustomEvent('browserInfoLoaded'));
-      };
-
-      // Whether this is a dev build.
-      if (/^\d+\.\d+\.\d+\D/.test(browser.runtime.getManifest().version)) {
+      // Whether this extension is a dev build.
+      if (/^\d+\.\d+\.\d+\D/.test(manifest.version)) {
         soup.add('devbuild');
       }
 
       if (/\bMobile\b/.test(ua)) {
         soup.add('mobile');
       }
-
-      // Asynchronous -- more accurate detection for Firefox
-      (async () => {
-        try {
-          const info = await browser.runtime.getBrowserInfo();
-          flavor.major = parseInt(info.version, 10) || 0;
-          soup.add(info.vendor.toLowerCase());
-          soup.add(info.name.toLowerCase());
-        } catch (ex) {
-          // dummy event for potential listeners
-          dispatch();
-        }
-      })();
 
       // Synchronous -- order of tests is important
       let match;
@@ -385,16 +661,23 @@ if (Node && !Node.prototype.getRootNode) {
       } else if ((match = /\bChrome\/(\d+)/.exec(ua)) !== null) {
         flavor.major = parseInt(match[1], 10) || 0;
         soup.add('google').add('chromium');
+        if (/\bEdg\/([\d.]+)/.test(ua)) {
+          // Chromium based Edge
+          soup.add('microsoft').add('edge');
+        }
       } else if ((match = /\bSafari\/(\d+)/.exec(ua)) !== null) {
         flavor.major = parseInt(match[1], 10) || 0;
         soup.add('apple').add('safari');
+      } else if ((match = /\bNode\.js\/(\d+)/.exec(ua)) !== null) {
+        flavor.major = parseInt(match[1], 10) || 0;
+        soup.add('node.js');
       }
 
       if (manifest.browser_specific_settings && manifest.browser_specific_settings.gecko) {
         soup.add('gecko');
       }
 
-      Object.defineProperty(this, 'userAgent', { value: flavor });
+      Object.defineProperty(this, 'userAgent', {value: flavor});
       return flavor;
     },
 
@@ -424,23 +707,32 @@ if (Node && !Node.prototype.getRootNode) {
       return options[key];
     }
     const args = {[key]: DEFAULT_OPTIONS[key]};
-    return browser.storage.sync.get(args).catch((ex) => {
-      return browser.storage.local.get(args);
-    }).then((response) => {
+    return browser.storage.local.get(args).then((response) => {
       return response[key];
     });
   };
 
   /**
-   * Use storage.sync if available. Fallback to storage.local and passed values.
-   *
-   * - Firefox < 52: browser.storage.sync === undefined
-   *
-   * - Firefox 52: browser.storage.sync.*() gets an error if
-   *     webextensions.storage.sync.enabled is false, which is default.
-   *
-   * - Firefox >= 53: webextensions.storage.sync.enabled is default to true
-   *
+   * @param {string} key - The option name to parse
+   * @param {*} [value] - An arbitarary value to feed to the parser. Read as
+   *      scrapbook.getOption if not provided.
+   * @return {*|Promise<*>}
+   */
+  scrapbook.parseOption = function (key, value) {
+    const parser = OPTION_PARSERS[key] || (x => x);
+    if (typeof value !== 'undefined') {
+      return parser(value);
+    }
+    value = scrapbook.getOption(key);
+    if (!scrapbook.isPromise(value)) {
+      return parser(value);
+    }
+    return value.then((value) => {
+      return parser(value);
+    });
+  };
+
+  /**
    * @param {null|string|string[]|Object} [keys] - Fallback to DEFAULT_OPTIONS
    *     when passing non-object.
    * @param {Object} [options]
@@ -466,50 +758,148 @@ if (Node && !Node.prototype.getRootNode) {
     if (options) {
       const rv = {};
       for (const key in keys) {
-        rv[key] = options[key];
+        if (key in options) {
+          rv[key] = options[key];
+        }
       }
       return rv;
     }
-    return browser.storage.sync.get(keys).catch((ex) => {
-      return browser.storage.local.get(keys);
-    });
+    return browser.storage.local.get(keys);
   };
 
   /**
-   * Use storage.sync if available. Fallback to storage.local.
-   *
    * @param {Object} keys
    */
   scrapbook.setOptions = async function (keys) {
-    return browser.storage.sync.set(keys).catch((ex) => {
-      return browser.storage.local.set(keys);
-    });
+    return browser.storage.local.set(keys);
   };
 
+  /**
+   * @param {string[]} keys
+   */
+  scrapbook.clearOptions = async function (keys) {
+    return await browser.storage.local.remove(keys);
+  };
+
+  scrapbook.autoCacheOptions = function () {
+    const fulltextCache = scrapbook.getOption("scrapbook.autoCache.fulltextCache");
+    const createStaticSite = scrapbook.getOption("scrapbook.autoCache.createStaticSite");
+    if (!(fulltextCache || createStaticSite)) {
+      return null;
+    }
+    const rv = {};
+    if (fulltextCache) { rv.fulltext = 1; }
+    if (createStaticSite) { rv.static_site = 1; }
+    return rv;
+  };
 
   /****************************************************************************
    * Cache system
    *
-   * - IndexedDb is powerful but more restricted (not available for a content
-   *   script and a Firefox private window, and not shared with an incognito
-   *   window in Chromium). Arbitrarily use storage if needed.
-   * - Storage API does not support storing a Blob or File in Firefox < 56 and
-   *   Chromium. A shim with byte-string based object is implemented, but it's
-   *   not performant and should thus be avoided whenever possible.
-   * - By default, use indexedDB for Chromium and storage API for Firefox, due
-   *   to above reasons.
+   * - IndexedDB is powerful and performant but not available in content
+   *   scripts, and stored data in normal and incognito windows aren't shared
+   *   with each other. IndexedDB is not available in Firefox private windows
+   *   and will automatically fallback to storage.
+   * - Storage API does not support storing Blob, File, etc., in Chromium. A
+   *   shim with byte-string based object is implemented, but it's not
+   *   performant and should thus be avoided whenever possible.
+   * - Use storage by default and use indexedDB when appropriate.
    ***************************************************************************/
+
+  /**
+   * @typedef {Object} serializedBlob
+   * @property {string} __type__
+   * @property {string} type
+   * @property {string[]} data
+   */
+
+  /**
+   * @typedef {serializedBlob} serializedFile
+   * @property {string} __type__
+   * @property {string} name
+   * @property {string} type
+   * @property {number} lastModified
+   * @property {string[]} data
+   */
+
+  /**
+   * Serialize an object to be transmittable through messaging.
+   *
+   * If the serialization cannot be done synchronously, a Promise is returned.
+   *
+   * @param {*} obj
+   * @return {*|serializedBlob|Promise<serializedBlob>}
+   */
+  scrapbook.serializeObject = function (...args) {
+    // Max JavaScript string is 256MiB UTF-16 chars in an older Browser.
+    const BYTE_STRING_MAX = 32 * 1024 * 1024;
+
+    const readBlobAsByteStrings = async (blob) => {
+      const rv = [];
+      const u8ar = new Uint8Array(await scrapbook.readFileAsArrayBuffer(blob));
+      for (let i = 0, I = u8ar.length; i < I; i += BYTE_STRING_MAX) {
+        rv.push(scrapbook.arrayBufferToByteString(u8ar.subarray(i, i + BYTE_STRING_MAX)));
+      }
+      return rv;
+    };
+
+    const fn = scrapbook.serializeObject = (obj) => {
+      if (obj instanceof File) {
+        return (async () => ({
+          __type__: 'File',
+          name: obj.name,
+          type: obj.type,
+          lastModified: obj.lastModified,
+          data: await readBlobAsByteStrings(obj),
+        }))();
+      } else if (obj instanceof Blob) {
+        return (async () => ({
+          __type__: 'Blob',
+          type: obj.type,
+          data: await readBlobAsByteStrings(obj),
+        }))();
+      }
+      return obj;
+    };
+
+    return fn(...args);
+  };
+
+  /**
+   * Deserialize a serializedBlob.
+   *
+   * If the deserialization cannot be done synchronously, a Promise is returned.
+   *
+   * @param {serializedBlob|*} obj
+   * @return {*|Promise<*>}
+   */
+  scrapbook.deserializeObject = function (obj) {
+    switch (obj && obj.__type__) {
+      case "File": {
+        const {data, name, type, lastModified} = obj;
+        return new File(
+          data.map(x => scrapbook.byteStringToArrayBuffer(x)),
+          name,
+          {type, lastModified},
+        );
+      }
+      case "Blob": {
+        const {data, type} = obj;
+        return new Blob(
+          data.map(x => scrapbook.byteStringToArrayBuffer(x)),
+          {type},
+        );
+      }
+    }
+    return obj;
+  };
 
   scrapbook.cache = {
     _current: 'auto',
 
     get current() {
       if (this._current === 'auto') {
-        if (scrapbook.userAgent.is('gecko')) {
-          this._current = 'storage';
-        } else {
-          this._current = 'indexedDB';
-        }
+        this._current = 'storage';
       }
       return this._current;
     },
@@ -518,50 +908,113 @@ if (Node && !Node.prototype.getRootNode) {
       this._current = value;
     },
 
-    async _escapeObject(obj) {
-      if (obj instanceof File) {
-        return {
-          __type__: 'File',
-          name: obj.name,
-          type: obj.type,
-          lastModified: obj.lastModified,
-          data: await scrapbook.readFileAsText(obj, false),
-        };
-      } else if (obj instanceof Blob) {
-        return {
-          __type__: 'Blob',
-          type: obj.type,
-          data: await scrapbook.readFileAsText(obj, false),
-        };
+    async _serializeObject(obj) {
+      const map = {};
+      const objStr = JSON.stringify(obj, (key, value) => {
+        const valueNew = scrapbook.serializeObject(value);
+        if (valueNew !== value) {
+          const id = scrapbook.getUuid();
+          map[id] = valueNew;
+          return id;
+        }
+        return value;
+      });
+      if (!objStr) {
+        // obj not JSON stringifiable, probably undefined
+        return obj;
       }
-      return obj;
+      for (const key in map) {
+        map[key] = await map[key];
+      }
+      return JSON.parse(objStr, (key, value) => {
+        if (value in map) {
+          return map[value];
+        }
+        return value;
+      });
     },
 
-    _unescapeObject(obj) {
+    async _deserializeObject(obj) {
+      const map = {};
+      const objStr = JSON.stringify(obj, (key, value) => {
+        const valueNew = scrapbook.deserializeObject(value);
+        if (valueNew !== value) {
+          const id = scrapbook.getUuid();
+          map[id] = valueNew;
+          return id;
+        }
+        return value;
+      });
+      if (!objStr) {
+        // obj not JSON stringifiable, probably undefined
+        return obj;
+      }
+      for (const key in map) {
+        map[key] = await map[key];
+      }
+      return JSON.parse(objStr, (key, value) => {
+        if (value in map) {
+          return map[value];
+        }
+        return value;
+      });
+    },
+
+    /**
+     * @typedef {Object} cacheFilter
+     * @property {Object<string, (string|string[]|Set<string>)>} [includes]
+     * @property {Object<string, (string|string[]|Set<string>)>} [excludes]
+     */
+
+    /**
+     * @param {string} key
+     * @param {cacheFilter} [filter]
+     */
+    _applyFilter(key, filter) {
+      let obj;
       try {
-        switch (obj.__type__) {
-          case "File": {
-            return new File(
-              [scrapbook.byteStringToArrayBuffer(obj.data)],
-              obj.name,
-              {type: obj.type, lastModified: obj.lastModified}
-            );
-          }
-          case "Blob": {
-            return new Blob(
-              [scrapbook.byteStringToArrayBuffer(obj.data)],
-              {type: obj.type}
-            );
+        obj = JSON.parse(key);
+      } catch (ex) {
+        // invalid JSON format => meaning not a cache
+        return false;
+      }
+
+      filter = filter || {};
+
+      if (filter.includes) {
+        for (const key in filter.includes) {
+          const value = filter.includes[key];
+          if (value instanceof Set) {
+            if (!value.has(obj[key])) {
+              return false;
+            }
+          } else if (Array.isArray(value)) {
+            if (!value.includes(obj[key])) {
+              return false;
+            }
+          } else {
+            if (obj[key] !== value) {
+              return false;
+            }
           }
         }
-      } catch (ex) {}
-      return obj;
-    },
-
-    _filterByObject(filter, obj) {
-      for (let cond in filter) {
-        if (obj[cond] !== filter[cond]) {
-          return false;
+      }
+      if (filter.excludes) {
+        for (const key in filter.excludes) {
+          const value = filter.excludes[key];
+          if (value instanceof Set) {
+            if (value.has(obj[key])) {
+              return false;
+            }
+          } else if (Array.isArray(value)) {
+            if (value.includes(obj[key])) {
+              return false;
+            }
+          } else {
+            if (obj[key] === value) {
+              return false;
+            }
+          }
         }
       }
       return true;
@@ -576,19 +1029,9 @@ if (Node && !Node.prototype.getRootNode) {
     },
 
     /**
-     * @param {string|Object|Function} filter
+     * @param {cacheFilter} filter
      */
     async getAll(filter, cache = this.current) {
-      if (typeof filter === 'function') {
-        // use unchanged filter
-      } else if (typeof filter === 'object') {
-        filter = this._filterByObject.bind(this, filter);
-      } else if (typeof filter === 'string') {
-        filter = this._filterByObject.bind(this, JSON.parse(filter));
-      } else {
-        // unsupported type
-        filter = this._filterByObject.bind(this, {});
-      }
       return this[cache].getAll(filter);
     },
 
@@ -601,83 +1044,116 @@ if (Node && !Node.prototype.getRootNode) {
     },
 
     /**
-     * @param {string|Object|string[]|Object[]|Function} keys - a filter
-     *     function or a key (string or Object) or an array of keys
+     * @param {string|Object} key
      */
-    async remove(keys, cache = this.current) {
-      if (typeof keys !== 'function') {
-        if (!Array.isArray(keys)) {
-          keys = [keys];
-        }
-        keys = keys.map((key) => {
-          return (typeof key === "string") ? key : JSON.stringify(key);
-        });
-      }
-      return this[cache].remove(keys);
+    async remove(key, cache = this.current) {
+      const keyStr = (typeof key === "string") ? key : JSON.stringify(key);
+      return this[cache].remove(keyStr);
+    },
+
+    /**
+     * @param {cacheFilter} filter
+     */
+    async removeAll(filter, cache = this.current) {
+      return this[cache].removeAll(filter);
     },
 
     storage: {
-      get _escapeObjectNeeded() {
-        delete this._escapeObjectNeeded;
-        return this._escapeObjectNeeded = 
-            (scrapbook.userAgent.major < 56 && scrapbook.userAgent.is('gecko')) || 
-            scrapbook.userAgent.is('chromium');
+      get _serializeObjectNeeded() {
+        // In Chromium, a Blob cannot be stored in browser.storage,
+        // fallback to an object containing byte string data.
+        delete this._serializeObjectNeeded;
+        return this._serializeObjectNeeded = scrapbook.userAgent.is('chromium');
       },
 
-      async _escapeObject(obj) {
-        // In Firefox < 56 and Chromium,
-        // Blob cannot be stored in browser.storage,
-        // fallback to an object containing byte string data.
-        if (this._escapeObjectNeeded) {
-          return await scrapbook.cache._escapeObject(obj);
+      async _serializeObject(obj) {
+        if (this._serializeObjectNeeded) {
+          return await scrapbook.cache._serializeObject(obj);
         }
-
-        // otherwise return the original object
         return obj;
       },
 
-      _unescapeObject(obj) {
-        return scrapbook.cache._unescapeObject(obj);
+      async _deserializeObject(obj) {
+        if (this._serializeObjectNeeded) {
+          return await scrapbook.cache._deserializeObject(obj);
+        }
+        return obj;
+      },
+
+      async _getKeys(fallback = true) {
+        // Chromium < 130 and Firefox
+        // ref: https://bugzilla.mozilla.org/show_bug.cgi?id=1910669
+        if (!browser.storage.local.getKeys) {
+          if (fallback) {
+            return Object.keys(await browser.storage.local.get());
+          }
+
+          return null;
+        }
+
+        return await browser.storage.local.getKeys();
       },
 
       async get(key) {
         const items = await browser.storage.local.get(key);
-        return this._unescapeObject(items[key]);
+        return await this._deserializeObject(items[key]);
       },
 
       async getAll(filter) {
-        const items = await browser.storage.local.get(null);
-        for (let key in items) {
-          try {
-            let obj = JSON.parse(key);
-            if (!filter(obj)) {
-              throw new Error("filter not matched");
+        const keys = await this._getKeys(false);
+
+        // Chromium < 130 and Firefox
+        // ref: https://bugzilla.mozilla.org/show_bug.cgi?id=1910669
+        if (!keys) {
+          const items = await browser.storage.local.get();
+          for (const key in items) {
+            if (!scrapbook.cache._applyFilter(key, filter)) {
+              delete items[key];
             }
-            items[key] = this._unescapeObject(items[key]);
-          } catch (ex) {
-            // invalid JSON format => meaning not a cache
-            // or does not match the filter
-            delete(items[key]);
           }
+          return await this._deserializeObject(items);
         }
-        return items;
+
+        const items = await browser.storage.local.get(
+          keys.filter(key => scrapbook.cache._applyFilter(key, filter)),
+        );
+        return await this._deserializeObject(items);
       },
 
       async set(key, value) {
-        return await browser.storage.local.set({[key]: await this._escapeObject(value)});
+        return await browser.storage.local.set({[key]: await this._serializeObject(value)});
       },
 
-      async remove(keys) {
-        if (typeof keys === 'function') {
-          keys = Object.keys(await this.getAll(keys));
+      async remove(key) {
+        return await browser.storage.local.remove(key);
+      },
+
+      async removeAll(filter) {
+        const keys = [];
+        for (const key of (await this._getKeys())) {
+          if (scrapbook.cache._applyFilter(key, filter)) {
+            keys.push(key);
+          }
         }
         return await browser.storage.local.remove(keys);
       },
     },
 
     indexedDB: {
+      get _nosupport() {
+        // Firefox: `indexedDB.open` throws `InvalidStateError` in an extension
+        // tab in a private window.
+        // ref: https://bugzilla.mozilla.org/show_bug.cgi?id=1841806
+        const p = this._connect().then(
+          (db) => (db.close(), false),
+          (ex) => (ex.name === 'InvalidStateError'),
+        );
+        delete this._nosupport;
+        return this._nosupport = p;
+      },
+
       async _connect() {
-        const p = new Promise((resolve, reject) => {
+        return await new Promise((resolve, reject) => {
           const request = indexedDB.open("scrapbook", 3);
           request.onupgradeneeded = (event) => {
             let db = event.target.result;
@@ -698,36 +1174,42 @@ if (Node && !Node.prototype.getRootNode) {
             reject(event.target.error);
           };
         });
-        this._connect = () => p;
-        return p;
       },
 
       async _transaction(callback, mode, options) {
         const db = await this._connect();
-        const transaction = db.transaction("cache", mode, options);
-        const objectStore = transaction.objectStore("cache");
-        return await new Promise((resolve, reject) => {
-          // transaction is available from objectStore.transaction
-          const result = callback.call(this, objectStore);
+        try {
+          const transaction = db.transaction("cache", mode, options);
+          const objectStore = transaction.objectStore("cache");
+          return await new Promise((resolve, reject) => {
+            // transaction is available from objectStore.transaction
+            const result = callback.call(this, objectStore);
 
-          transaction.oncomplete = (event) => {
-            resolve(result);
-          };
+            transaction.oncomplete = (event) => {
+              resolve(result);
+            };
 
-          transaction.onerror = (event) => {
-            // unhandled error for IDBRequest will bubble up to transaction error
-            reject(event.target.error);
-          };
+            transaction.onerror = (event) => {
+              // unhandled error for IDBRequest will bubble up to transaction error
+              reject(event.target.error);
+            };
 
-          // abort the transaction if there's an unexpected error
-          result.catch((ex) => {
-            transaction.abort();
-            reject(ex);
+            // abort the transaction if there's an unexpected error
+            result.catch((ex) => {
+              reject(ex);
+              transaction.abort();
+            });
           });
-        });
+        } finally {
+          db.close();
+        }
       },
 
       async get(key) {
+        if (await this._nosupport) {
+          return scrapbook.cache.storage.get(key);
+        }
+
         return await this._transaction(async (objectStore) => {
           return await new Promise((resolve, reject) => {
             objectStore.get(key).onsuccess = (event) => {
@@ -738,6 +1220,10 @@ if (Node && !Node.prototype.getRootNode) {
       },
 
       async getAll(filter) {
+        if (await this._nosupport) {
+          return scrapbook.cache.storage.getAll(filter);
+        }
+
         return await this._transaction(async (objectStore) => {
           const result = {};
           return await new Promise((resolve, reject) => {
@@ -747,11 +1233,9 @@ if (Node && !Node.prototype.getRootNode) {
                 resolve(result);
                 return;
               }
-              try {
-                if (filter(JSON.parse(cursor.key))) {
-                  result[cursor.key] = cursor.value;
-                }
-              } catch (ex) {}
+              if (scrapbook.cache._applyFilter(cursor.key, filter)) {
+                result[cursor.key] = cursor.value;
+              }
               cursor.continue();
             };
           });
@@ -759,90 +1243,89 @@ if (Node && !Node.prototype.getRootNode) {
       },
 
       async set(key, value) {
+        if (await this._nosupport) {
+          return scrapbook.cache.storage.set(key, value);
+        }
+
         return await this._transaction(async (objectStore) => {
           objectStore.put(value, key);
         }, "readwrite");
       },
 
-      async remove(keys) {
-        return await this._transaction(async (objectStore) => {
-          if (typeof keys === 'function') {
-            const filter = keys;
-            return await new Promise((resolve, reject) => {
-              objectStore.openCursor().onsuccess = (event) => {
-                const cursor = event.target.result;
-                if (!cursor) {
-                  resolve();
-                  return;
-                }
-                try {
-                  if (filter(JSON.parse(cursor.key))) {
-                    cursor.delete();
-                  }
-                } catch (ex) {}
-                cursor.continue();
-              };
-            });
-          }
+      async remove(key) {
+        if (await this._nosupport) {
+          return scrapbook.cache.storage.remove(key);
+        }
 
-          for (const key of keys) {
-            objectStore.delete(key);
-          }
+        return await this._transaction(async (objectStore) => {
+          objectStore.delete(key);
+        }, "readwrite");
+      },
+
+      async removeAll(filter) {
+        if (await this._nosupport) {
+          return scrapbook.cache.storage.removeAll(filter);
+        }
+
+        return await this._transaction(async (objectStore) => {
+          return await new Promise((resolve, reject) => {
+            objectStore.openCursor().onsuccess = (event) => {
+              const cursor = event.target.result;
+              if (!cursor) {
+                resolve();
+                return;
+              }
+              if (scrapbook.cache._applyFilter(cursor.key, filter)) {
+                cursor.delete();
+              }
+              cursor.continue();
+            };
+          });
         }, "readwrite");
       },
     },
 
     sessionStorage: {
-      async _escapeObject(obj) {
-        return await scrapbook.cache._escapeObject(obj);
+      async _serializeObject(obj) {
+        return await scrapbook.cache._serializeObject(obj);
       },
 
-      _unescapeObject(obj) {
-        return scrapbook.cache._unescapeObject(obj);
+      async _deserializeObject(obj) {
+        return await scrapbook.cache._deserializeObject(obj);
       },
 
       async get(key) {
-        return this._unescapeObject(JSON.parse(sessionStorage.getItem(key)));
+        // @TODO: direct string to object deserialization?
+        return await this._deserializeObject(JSON.parse(sessionStorage.getItem(key)));
       },
 
       async getAll(filter) {
-        const items = [];
+        const items = {};
         for (let i = 0, I = sessionStorage.length; i < I; i++) {
           const key = sessionStorage.key(i);
-          try {
-            let obj = JSON.parse(key);
-            if (!filter(obj)) {
-              throw new Error("filter not matched");
-            }
-            items[key] = this._unescapeObject(JSON.parse(sessionStorage.getItem(key)));
-          } catch (ex) {
-            // invalid JSON format => meaning not a cache
-            // or does not match the filter
+          if (scrapbook.cache._applyFilter(key, filter)) {
+            items[key] = JSON.parse(sessionStorage.getItem(key));
           }
         }
-        return items;
+        return await this._deserializeObject(items);
       },
 
       async set(key, value) {
-        return sessionStorage.setItem(key, JSON.stringify(await this._escapeObject(value)));
+        // @TODO: direct object to string serialization?
+        return sessionStorage.setItem(key, JSON.stringify(await this._serializeObject(value)));
       },
 
-      async remove(keys) {
-        if (typeof keys === 'function') {
-          const filter = keys;
-          for (let i = 0, I = sessionStorage.length; i < I; i++) {
-            const key = sessionStorage.key(i);
-            try {
-              if (filter(JSON.parse(key))) {
-                sessionStorage.removeItem(key);
-              }
-            } catch (ex) {}
-          }
-          return;
-        }
+      async remove(key) {
+        return sessionStorage.removeItem(key);
+      },
 
-        for (const key of keys) {
-          sessionStorage.removeItem(key);
+      async removeAll(filter) {
+        // reverse the order to prevent an error due to index shift after removal
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const key = sessionStorage.key(i);
+          if (scrapbook.cache._applyFilter(key, filter)) {
+            sessionStorage.removeItem(key);
+          }
         }
       },
     },
@@ -853,22 +1336,43 @@ if (Node && !Node.prototype.getRootNode) {
    * Lang
    ***************************************************************************/
 
-  scrapbook.lang = function (key, args) {
-    return browser.i18n.getMessage(key, args) || "__MSG_" + key + "__";
+  scrapbook.lang = function (...args) {
+    const msgRegex = /__MSG_(.*?)__/g;
+    const msgReplacer = (m, k) => scrapbook.lang(k);
+    const fn = scrapbook.lang = (key, args) => {
+      const msg = browser.i18n.getMessage(key, args);
+      if (msg) {
+        // recursively replace __MSG_key__
+        return msg.replace(msgRegex, msgReplacer);
+      }
+      return `__MSG_${key}__`;
+    };
+    return fn(...args);
   };
 
-  scrapbook.loadLanguages = function (rootNode) {
-    for (const elem of rootNode.querySelectorAll('*')) {
-      if (elem.childNodes.length === 1) {
-        let child = elem.firstChild;
-        if (child.nodeType === 3) {
-          child.nodeValue = child.nodeValue.replace(/__MSG_(.*?)__/, (m, k) => scrapbook.lang(k));
+  scrapbook.loadLanguages = function (...args) {
+    const msgRegex = /__MSG_(.*?)__/g;
+    const msgReplacer = (m, k) => scrapbook.lang(k);
+    const fn = scrapbook.loadLanguages = (rootNode) => {
+      const doc = rootNode.ownerDocument || rootNode;
+      const walker = doc.createNodeIterator(rootNode, 5 /* NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT */);
+
+      let node = walker.nextNode();
+      while (node) {
+        switch (node.nodeType) {
+          case 1:
+            for (const attr of node.attributes) {
+              attr.nodeValue = attr.nodeValue.replace(msgRegex, msgReplacer);
+            }
+            break;
+          case 3:
+            node.nodeValue = node.nodeValue.replace(msgRegex, msgReplacer);
+            break;
         }
+        node = walker.nextNode();
       }
-      for (const attr of elem.attributes) {
-        attr.nodeValue = attr.nodeValue.replace(/__MSG_(.*?)__/, (m, k) => scrapbook.lang(k));
-      }
-    }
+    };
+    return fn(...args);
   };
 
 
@@ -877,12 +1381,56 @@ if (Node && !Node.prototype.getRootNode) {
    ***************************************************************************/
 
   /**
+   * Add a message listener, with optional filter and errorHandler.
+   *
+   * @param {Function} [filter]
+   * @param {Function} [errorHandler]
+   * @return {Function}
+   */
+  scrapbook.addMessageListener = function (filter, errorHandler = ex => {
+    console.error(ex);
+    throw ex;
+  }) {
+    const listener = (message, sender) => {
+      if (filter && !filter(message, sender)) { return; }
+
+      const {cmd, args} = message;
+      const senderInfo = '[' +
+        (sender.tab ? sender.tab.id : -1) +
+        (typeof sender.frameId !== 'undefined' ? ':' + sender.frameId : '') +
+        ']';
+
+      isDebug && console.debug(cmd, "receive", senderInfo, args);
+
+      const parts = cmd.split('.');
+      const subCmd = parts.pop();
+      const object = parts.reduce((object, part) => {
+        return object[part];
+      }, global);
+
+      // thrown Error don't show here but cause the sender to receive an error
+      if (!object || !subCmd || typeof object[subCmd] !== 'function') {
+        throw new Error(`Unable to invoke unknown command '${cmd}'.`);
+      }
+
+      return Promise.resolve()
+        .then(() => {
+          return object[subCmd](args, sender);
+        })
+        .catch(errorHandler);
+    };
+    browser.runtime.onMessage.addListener(listener);
+    return listener;
+  };
+
+  /**
    * Init content scripts in the specified tab.
    *
    * @param {integer} tabId - The tab's ID to init content script.
+   * @param {integer} [frameId] - The frame ID to init content script.
    * @return {Promise<Object>}
    */
-  scrapbook.initContentScripts = async function (tabId) {
+  scrapbook.initContentScripts = async function (tabId, frameId) {
     // Simply run executeScript for allFrames by checking for nonexistence of
     // the content script in the main frame has a potential leak causing only
     // partial frames have the content script loaded. E.g. the user ran this
@@ -890,8 +1438,11 @@ if (Node && !Node.prototype.getRootNode) {
     // existence of content script for every frame and inject on demand.
     const tasks = [];
     const allowFileAccess = await browser.extension.isAllowedFileSchemeAccess();
-    (await browser.webNavigation.getAllFrames({tabId})).forEach(({frameId, url}) => {
-      if (!scrapbook.isContentPage(url, allowFileAccess)) { return; }
+    const frameIds = Number.isInteger(frameId) ?
+        await browser.webNavigation.getFrame({tabId, frameId}).then(r => [Object.assign(r, {frameId})]) :
+        await browser.webNavigation.getAllFrames({tabId});
+    for (const {frameId, url} of frameIds) {
+      if (!scrapbook.isContentPage(url, allowFileAccess)) { continue; }
 
       // Send a test message to check whether content script is loaded.
       // If no content script, we get an error saying connection cannot be established.
@@ -922,20 +1473,26 @@ if (Node && !Node.prototype.getRootNode) {
               result.injected = false;
             } else if (typeof response === "string") {
               result.injected = false;
-              result.error = response;
+              result.error = {message: response};
             }
             return result;
-          })
+          }),
       );
-    });
+    }
     return await Promise.all(tasks);
   };
+
+  /**
+   * A function that can be invoked through messaging.
+   * @typedef {Function} invokable
+   * @param {Object} [params]
+   */
 
   /**
    * Invoke an invokable command in the extension script.
    *
    * @param {Object} params
-   * @param {string} params.id
+   * @param {string} [params.id]
    * @param {string} params.cmd
    * @param {Object} [params.args]
    * @return {Promise<Object>}
@@ -968,7 +1525,7 @@ if (Node && !Node.prototype.getRootNode) {
    * Invoke an invokable command in a frame.
    *
    * @param {Object} params
-   * @param {integer} params.frameWindow
+   * @param {Window} params.frameWindow
    * @param {string} params.cmd
    * @param {Object} [params.args]
    * @return {Promise<Object>}
@@ -998,6 +1555,84 @@ if (Node && !Node.prototype.getRootNode) {
     }
   };
 
+  scrapbook.openModalWindow = async function (options) {
+    const doc = window.document;
+
+    if (!doc) {
+      throw new Error('Must run in a document.');
+    }
+
+    // create a modal dialog with mask
+    const supportsDialog = typeof HTMLDialogElement !== 'undefined';
+
+    // in case there is another existing prompt due to inproper trigger
+    for (const elem of doc.documentElement.querySelectorAll('[data-scrapbook-elem="toolbar-prompt"]')) {
+      elem.remove();
+    }
+
+    const host = doc.documentElement.appendChild(doc.createElement('scrapbook-toolbar-prompt'));
+    host.setAttribute('data-scrapbook-elem', 'toolbar-prompt');
+
+    const shadow = host.attachShadow({mode: 'closed'});
+
+    const cssElem = shadow.appendChild(doc.createElement('style'));
+    cssElem.textContent = `
+:host {
+  all: initial !important;
+  position: absolute !important;
+}
+dialog {
+  all: initial;
+  position: fixed;
+  inset: 0;
+}
+.mask {
+  z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.4);
+}
+`;
+
+    const dialog = shadow.appendChild(doc.createElement('dialog'));
+
+    const {promise, resolve, reject} = Promise.withResolvers();
+
+    const observer = new MutationObserver((mutations) => {
+      if (!doc.documentElement.contains(host)) {
+        reject(new Error('dialog host removed from DOM'));
+      }
+    });
+    observer.observe(doc.documentElement, {childList: true});
+
+    if (supportsDialog) {
+      dialog.addEventListener('close', () => reject(new Error('dialog closed')));
+      dialog.showModal();
+    } else {
+      dialog.classList.add('mask');
+    }
+
+    const id = scrapbook.getUuid();
+
+    // launch modal window/tab
+    scrapbook.invokeExtensionScript({
+      cmd: 'background.openModalWindow',
+      args: {...options, id},
+    }).then(resolve, reject);
+
+    try {
+      return await promise;
+    } catch (ex) {
+      // close the dialog window/tab if interrupted
+      scrapbook.invokeExtensionScript({
+        cmd: 'background.openModalWindow.close',
+        args: {id},
+      }).catch(() => {});
+      return null;
+    } finally {
+      observer.disconnect();
+      host.remove();
+    }
+  };
+
 
   /****************************************************************************
    * ScrapBook related path/file/string/etc handling
@@ -1020,7 +1655,7 @@ if (Node && !Node.prototype.getRootNode) {
    * Escapes the given filename (may contain '/') string to be used in a canonical URI
    */
   scrapbook.quote = function (filename) {
-    return filename.replace(/[^\/]+/g, m => encodeURIComponent(m));
+    return filename.replace(/[^/]+/g, m => encodeURIComponent(m));
   };
 
   /**
@@ -1033,16 +1668,23 @@ if (Node && !Node.prototype.getRootNode) {
    */
   scrapbook.validateFilename = function (filename, forceAscii) {
     let fn = filename
-        // control chars are bad for filename
-        .replace(/[\x00-\x1F\x7F]+/g, "")
-        // leading/trailing spaces and dots are not allowed on Windows
-        .replace(/^\./, "_.").replace(/^ +/, "").replace(/[. ]+$/, "")
-        // bad chars on most OS
-        .replace(/[:"?*\\/|]/g, "_")
-        // bad chars on Windows, replace with adequate direction
-        .replace(/[<]/g, "(").replace(/[>]/g, ")")
-        // "~" is not allowed by browser.downloads
-        .replace(/[~]/g, "-");
+        // common restrictions
+        // - collapse document spaces
+        .replace(/[\t\n\f\r]+/g, " ")
+        // - control chars are bad for filename
+        .replace(/[\x00-\x1F\x7F\x80-\x9F]+/g, "")
+        // - bad chars on most OS
+        .replace(/[:"?*\\/|<>]/g, "_")
+        // downloads API restrictions
+        .replace(/[\xAD\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\uFFF9-\uFFFB\uFFFE\uFFFF\u{10FFFF}]+/gu, "")
+        // "~": not allowed in Chromium
+        // [\xA0\u2000-\u200A\u202F\u205F]: spaces, not allowed in Firefox
+        .replace(/[~\xA0\u2000-\u200A\u202F\u205F]/g, "_")
+        // Windows restrictions
+        // - leading/trailing spaces and dots
+        .replace(/^ +/, "").replace(/[. ]+$/, "").replace(/^\./, "_.")
+        // - reserved filenames
+        .replace(/^(CON|PRN|AUX|NUL|COM\d|LPT\d)((?:\..+)?)$/i, "$1_$2");
     if (forceAscii) {
       fn = fn.replace(/[^\x00-\x7F]+/g, m => encodeURIComponent(m));
     }
@@ -1054,64 +1696,101 @@ if (Node && !Node.prototype.getRootNode) {
    * Returns the ScrapBook ID from a given Date object
    *
    * @param  {Date} [date] - Given day, or now if not provided.
-   * @return {string} the ScrapBook ID
+   * @return {?string} the ScrapBook ID
    */
   scrapbook.dateToId = function (date) {
-    let dd = date || new Date();
-    return dd.getUTCFullYear() +
-        this.intToFixedStr(dd.getUTCMonth() + 1, 2) +
-        this.intToFixedStr(dd.getUTCDate(), 2) +
-        this.intToFixedStr(dd.getUTCHours(), 2) +
-        this.intToFixedStr(dd.getUTCMinutes(), 2) +
-        this.intToFixedStr(dd.getUTCSeconds(), 2) +
-        this.intToFixedStr(dd.getUTCMilliseconds(), 3);
+    const dt = date || new Date();
+    if (Number.isNaN(dt.valueOf())) { return null; }
+    const year = dt.getUTCFullYear();
+    if (year > 9999) { return '99991231235959999'; }
+    if (year < 0) { return '00000101000000000'; }
+    return year.toString().padStart(4, '0') +
+        (dt.getUTCMonth() + 1).toString().padStart(2, '0') +
+        dt.getUTCDate().toString().padStart(2, '0') +
+        dt.getUTCHours().toString().padStart(2, '0') +
+        dt.getUTCMinutes().toString().padStart(2, '0') +
+        dt.getUTCSeconds().toString().padStart(2, '0') +
+        dt.getUTCMilliseconds().toString().padStart(3, '0');
   };
 
   /**
    * @param {Date} id - Given ScrapBook ID
+   * @return {?Date}
    */
-  scrapbook.idToDate = function (id) {
-    let dd;
-    if (/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})$/.test(id)) {
-      dd = new Date(
-          parseInt(RegExp.$1, 10), parseInt(RegExp.$2, 10) - 1, parseInt(RegExp.$3, 10),
-          parseInt(RegExp.$4, 10), parseInt(RegExp.$5, 10), parseInt(RegExp.$6, 10), parseInt(RegExp.$7, 10)
-          );
-      dd.setTime(dd.valueOf() - dd.getTimezoneOffset() * 60 * 1000);
-    }
-    return dd;
+  scrapbook.idToDate = function (...args) {
+    const DT_MAX = new Date('9999-12-31T23:59:59.999Z').valueOf();
+    const DT_MIN = new Date('0000-01-01T00:00:00.000Z').valueOf();
+    const fn = scrapbook.idToDate = (id) => {
+      const m = id.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})$/);
+      if (!m) { return null; }
+      const dt = new Date();
+      dt.setUTCFullYear(Math.max(parseInt(m[1], 10), 0));
+      dt.setUTCMonth(Math.max(parseInt(m[2], 10) - 1, 0));
+      dt.setUTCDate(Math.max(parseInt(m[3], 10), 1));
+      dt.setUTCHours(parseInt(m[4], 10));
+      dt.setUTCMinutes(parseInt(m[5], 10));
+      dt.setUTCSeconds(parseInt(m[6], 10));
+      dt.setUTCMilliseconds(parseInt(m[7], 10));
+      if (dt.valueOf() > DT_MAX) { dt.setTime(DT_MAX); }
+      else if (dt.valueOf() < DT_MIN) { dt.setTime(DT_MIN); }
+      return dt;
+    };
+    return fn(...args);
   };
 
   /**
    * Returns the legacy ScrapBook ID from a given Date object
    *
-   * @deprecated Used by legacy ScrapBook. Inaccurate when used across timezone. Same seconds issue.
+   * @deprecated Used by legacy ScrapBook, with several issues:
+   *     - inaccurate when used across timezones
+   *     - items with same seconds issue
    * @param {Date} [date] - Given day, or now if not provided.
-   * @return {string} the ScrapBook ID
+   * @return {?string} the ScrapBook ID
    */
   scrapbook.dateToIdOld = function (date) {
-    let dd = date || new Date();
-    return dd.getFullYear() +
-        this.intToFixedStr(dd.getMonth() + 1, 2) +
-        this.intToFixedStr(dd.getDate(), 2) +
-        this.intToFixedStr(dd.getHours(), 2) +
-        this.intToFixedStr(dd.getMinutes(), 2) +
-        this.intToFixedStr(dd.getSeconds(), 2);
+    const dt = date || new Date();
+    if (Number.isNaN(dt.valueOf())) { return null; }
+    const year = dt.getFullYear();
+    if (year > 9999) { return '99991231235959'; }
+    if (year < 0) { return '00000101000000'; }
+    return year.toString().padStart(4, '0') +
+        (dt.getMonth() + 1).toString().padStart(2, '0') +
+        dt.getDate().toString().padStart(2, '0') +
+        dt.getHours().toString().padStart(2, '0') +
+        dt.getMinutes().toString().padStart(2, '0') +
+        dt.getSeconds().toString().padStart(2, '0');
   };
 
   /**
    * @deprecated See scrapbook.dateToIdOld for details.
    * @param {Date} id - Given ScrapBook ID
+   * @return {?Date}
    */
-  scrapbook.idToDateOld = function (id) {
-    let dd;
-    if (/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.test(id)) {
-      dd = new Date(
-          parseInt(RegExp.$1, 10), parseInt(RegExp.$2, 10) - 1, parseInt(RegExp.$3, 10),
-          parseInt(RegExp.$4, 10), parseInt(RegExp.$5, 10), parseInt(RegExp.$6, 10)
-          );
-    }
-    return dd;
+  scrapbook.idToDateOld = function (...args) {
+    const DT_MAX = (() => {
+      const dt = new Date('9999-12-31T23:59:59.999Z');
+      return dt.valueOf() + dt.getTimezoneOffset() * 60 * 1000;
+    })();
+    const DT_MIN = (() => {
+      const dt = new Date('0000-01-01T00:00:00.000Z');
+      return dt.valueOf() + dt.getTimezoneOffset() * 60 * 1000;
+    })();
+    const fn = scrapbook.idToDateOld = (id) => {
+      const m = id.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+      if (!m) { return null; }
+      const dt = new Date();
+      dt.setFullYear(Math.max(parseInt(m[1], 10), 0));
+      dt.setMonth(Math.max(parseInt(m[2], 10) - 1, 0));
+      dt.setDate(Math.max(parseInt(m[3], 10), 1));
+      dt.setHours(parseInt(m[4], 10));
+      dt.setMinutes(parseInt(m[5], 10));
+      dt.setSeconds(parseInt(m[6], 10));
+      dt.setMilliseconds(0);
+      if (dt.valueOf() > DT_MAX) { dt.setTime(DT_MAX); }
+      else if (dt.valueOf() < DT_MIN) { dt.setTime(DT_MIN); }
+      return dt;
+    };
+    return fn(...args);
   };
 
   scrapbook.ItemInfoFormatter = class ItemInfoFormatter {
@@ -1147,11 +1826,11 @@ if (Node && !Node.prototype.getRootNode) {
     }
 
     formatKey(key) {
-      const [keyMain, keySub, keySub2] = key.split('-');
+      const [keyMain, ...keySubs] = key.split('-');
       const fn = this[`format_${keyMain.toLowerCase()}`];
       if (typeof fn === 'function') {
         try {
-          return fn.call(this, keySub, keySub2) || '';
+          return fn.apply(this, keySubs) || '';
         } catch (ex) {
           console.error(`Failed to format "${key}": ${ex.message}`, this.item);
         }
@@ -1169,7 +1848,7 @@ if (Node && !Node.prototype.getRootNode) {
           return text.replace(/[\r\n][\S\s]+$/, '');
         }
         case "collapse": {
-          return scrapbook.trim(text).replace(/[\t\n\f\r ]+/g, ' ');
+          return scrapbook.split(text).join(' ');
         }
         case "url": {
           return encodeURIComponent(text);
@@ -1271,11 +1950,38 @@ if (Node && !Node.prototype.getRootNode) {
       return this.item.title;
     }
 
-    format_source(keySub) {
-      switch (keySub) {
+    format_source(key, searchKey) {
+      switch (key) {
+        case "protocol": {
+          const u = new URL(this.item.source);
+          return u.protocol.slice(0, -1);
+        }
         case "host": {
           const u = new URL(this.item.source);
           return u.host;
+        }
+        case "hostname": {
+          const u = new URL(this.item.source);
+          return u.hostname;
+        }
+        case "port": {
+          const u = new URL(this.item.source);
+          return u.port;
+        }
+        case "pathname": {
+          const u = new URL(this.item.source);
+          return u.pathname.slice(1);
+        }
+        case "search": {
+          const u = new URL(this.item.source);
+          if (typeof searchKey !== 'undefined') {
+            return u.searchParams.get(searchKey);
+          }
+          return u.search.slice(1);
+        }
+        case "hash": {
+          const u = new URL(this.item.source);
+          return u.hash.slice(1);
         }
         case "file": {
           return scrapbook.urlToFilename(this.item.source);
@@ -1287,25 +1993,24 @@ if (Node && !Node.prototype.getRootNode) {
           return this.item.source;
         }
       }
-      return '';
     }
 
     format_url() {
       return this.getItemUrl();
     }
 
-    format_create(keySub, keySub2) {
-      return this.formatDate(this.item.create, keySub, keySub2);
+    format_create(key, mode) {
+      return this.formatDate(this.item.create, key, mode);
     }
 
-    format_modify(keySub, keySub2) {
-      return this.formatDate(this.item.modify, keySub, keySub2);
+    format_modify(key, mode) {
+      return this.formatDate(this.item.modify, key, mode);
     }
 
-    format_recycled(keySub, keySub2) {
-      return this.formatDate(this.item.recycled, keySub, keySub2);
+    format_recycled(key, mode) {
+      return this.formatDate(this.item.recycled, key, mode);
     }
-  }
+  };
 
   /**
    * @param {string} url
@@ -1368,14 +2073,15 @@ if (Node && !Node.prototype.getRootNode) {
    *   basic-loader (since 0.69.0 <= WSB)
    *   annotation-css (since 0.70.0 <= WSB)
    *   annotation-loader (since 0.70.0 <= WSB)
+   *   custom-elements-loader (since 1.14.4 <= WSB)
    *   infobar-loader (since 0.82.0 <= WSB)
    *   canvas-loader (for 0.51 <= WSB < 0.69)
    *   shadowroot-loader (for 0.51 <= WSB < 0.69)
    *   stylesheet (link, style) (for SB, SBX)
    *   stylesheet-temp (link, style) (for SBX)
    *
-   *   custom-css (should not be altered by the capturer or editor) (since 0.70 <= WSB)
-   *   custom-script (should not be altered by the capturer or editor) (since 0.70 <= WSB)
+   *   custom-css (should not be altered by the editor) (since 0.70 <= WSB)
+   *   custom-script (should not be altered by the editor) (since 0.70 <= WSB)
    *   custom-script-safe (known safe for page resaving) (since 0.70 <= WSB)
    *
    * @return {false|string} Scrapbook object type of the element; or false.
@@ -1393,31 +2099,6 @@ if (Node && !Node.prototype.getRootNode) {
 
     let type = node.getAttribute("data-scrapbook-elem");
     if (type) { return type; }
-
-    // for downward compatibility with legacy ScrapBook X
-    type = node.getAttribute("data-sb-obj");
-    if (type) { return type; }
-
-    // for downward compatibility with legacy ScrapBook
-    switch (node.className) {
-      case "linemarker-marked-line":
-        return "linemarker";
-      case "scrapbook-inline":
-        return "inline";
-      case "scrapbook-sticky":
-      case "scrapbook-sticky scrapbook-sticky-relative":
-        return "sticky";
-      case "scrapbook-sticky-header":
-        return "sticky-header";
-      case "scrapbook-sticky-footer":
-        return "sticky-footer";
-      case "scrapbook-block-comment":
-        return "block-comment";
-    }
-
-    if (node.id == "scrapbook-sticky-css") {
-      return "stylesheet";
-    }
 
     return false;
   };
@@ -1449,13 +2130,55 @@ if (Node && !Node.prototype.getRootNode) {
       return node.ownerDocument.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`);
     }
 
-    // for downward compatibility with legacy ScrapBook (X)
-    id = node.getAttribute("data-sb-id");
-    if (id) {
-      return node.ownerDocument.querySelectorAll(`[data-sb-id="${CSS.escape(id)}"]`);
-    }
-
     return [node];
+  };
+
+  scrapbook.getShadowRoot = function (elem) {
+    if (elem.openOrClosedShadowRoot) {
+      // Firefox >= 63
+      // This API can return the native closed shadowRoot of an element like
+      // audio or video. Add a check to exclude such cases.
+      const nodeName = elem.nodeName.toLowerCase();
+      if (VALID_SHADOW_HOST_NAMES.has(nodeName) || nodeName.includes('-')) {
+        return elem.openOrClosedShadowRoot;
+      }
+    } else {
+      try {
+        // Chromium >= 88
+        return browser.dom.openOrClosedShadowRoot(elem);
+      } catch (ex) {}
+    }
+    return elem.shadowRoot;
+  };
+
+  scrapbook.getAdoptedStyleSheets = function* (docOrShadowRoot) {
+    try {
+      yield* docOrShadowRoot.adoptedStyleSheets;
+    } catch (ex) {
+      // Firefox < 101.0b1: docOrShadowRoot.adoptedStyleSheets is undefined
+      //
+      // Firefox < 101.0b8: docOrShadowRoot.adoptedStyleSheets of a content
+      // script throws an error when accessed.
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1767819
+      //
+      // Firefox >= 101.0b8: docOrShadowRoot.adoptedStyleSheets of a content
+      // script has all properties unreadable.
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1770592
+      //
+      // Workaround with document.wrappedJSObject:
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1817675
+      if (!('adoptedStyleSheets' in docOrShadowRoot)) {
+        return;
+      }
+
+      try {
+        yield* docOrShadowRoot.wrappedJSObject.adoptedStyleSheets;
+      } catch (ex) {
+        // This shouldn't happen.
+        // Catch the error in case of an unexpected implementation change.
+        console.error(ex);
+      }
+    }
   };
 
   /**
@@ -1473,7 +2196,7 @@ if (Node && !Node.prototype.getRootNode) {
     const {contentType: mime, documentElement: docElemNode} = doc;
     const newDoc = (new DOMParser()).parseFromString(
       '<' + docElemNode.nodeName.toLowerCase() + '/>',
-      DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html'
+      DOMPARSER_SUPPORT_TYPES.has(mime) ? mime : 'text/html',
     );
     while (newDoc.firstChild) {
       newDoc.removeChild(newDoc.firstChild);
@@ -1495,14 +2218,37 @@ if (Node && !Node.prototype.getRootNode) {
    */
   scrapbook.cloneNode = function (...args) {
     const cloneShadowDom = (node, newNode, options = {}) => {
-      const shadowRoot = node.shadowRoot;
+      const shadowRoot = scrapbook.getShadowRoot(node);
       if (!shadowRoot) { return; }
-      const {origNodeMap, clonedNodeMap} = options;
-      const newShadowRoot = newNode.attachShadow({mode: shadowRoot.mode});
-      origNodeMap && origNodeMap.set(newShadowRoot, shadowRoot);
-      clonedNodeMap && clonedNodeMap.set(shadowRoot, newShadowRoot);
-      for (const node of shadowRoot.childNodes) {
-        newShadowRoot.appendChild(scrapbook.cloneNode(node, true, options));
+      const {origNodeMap, clonedNodeMap, includeShadowDom} = options;
+      let newShadowRoot = scrapbook.getShadowRoot(newNode);
+      if (newShadowRoot) {
+        // shadowRoot already cloned (when shadowRoot.clonable = true)
+        // map the shadowRoot and descendant nodes
+        const walker1 = shadowRoot.ownerDocument.createNodeIterator(shadowRoot);
+        const walker2 = newShadowRoot.ownerDocument.createNodeIterator(newShadowRoot);
+        let node1 = walker1.nextNode();
+        let node2 = walker2.nextNode();
+        while (node1) {
+          origNodeMap && origNodeMap.set(node2, node1);
+          clonedNodeMap && clonedNodeMap.set(node1, node2);
+          includeShadowDom && cloneShadowDom(node1, node2, options);
+          node1 = walker1.nextNode();
+          node2 = walker2.nextNode();
+        }
+      } else {
+        newShadowRoot = newNode.attachShadow({
+          mode: shadowRoot.mode,
+          clonable: shadowRoot.clonable,
+          delegatesFocus: shadowRoot.delegatesFocus,
+          serializable: shadowRoot.serializable,
+          slotAssignment: shadowRoot.slotAssignment,
+        });
+        origNodeMap && origNodeMap.set(newShadowRoot, shadowRoot);
+        clonedNodeMap && clonedNodeMap.set(shadowRoot, newShadowRoot);
+        for (const node of shadowRoot.childNodes) {
+          newShadowRoot.appendChild(scrapbook.cloneNode(node, true, options));
+        }
       }
     };
 
@@ -1513,7 +2259,7 @@ if (Node && !Node.prototype.getRootNode) {
         clonedNodeMap,
         includeShadowDom,
       } = options;
-      
+
       const newNode = newDoc.importNode(node, deep);
 
       if (deep) {
@@ -1544,23 +2290,80 @@ if (Node && !Node.prototype.getRootNode) {
   /**
    * Convert dynamic information into representable HTML attributes for an
    * element.
-   *
-   * @param {Object} [options]
-   * @param {Map|WeakMap} [options.mapShadowRoot] - mapping from an Element to
-   *     its (possibly closed) shadow root.
    */
   scrapbook.htmlifyElem = function (elem, options = {}) {
-    if (elem.nodeType !== 1) { return; }
+    // handle adoptedStyleSheet if supported by the browser
+    // @TODO: merge shared constructed stylesheets among shadow roots
+    if ('adoptedStyleSheets' in document && elem instanceof ShadowRoot) {
+      const adoptedStyleSheetMap = new Map();
 
-    const {
-      mapShadowRoot,
-    } = options;
+      const host = elem.host;
+      host.removeAttribute("data-scrapbook-adoptedstylesheets");
+
+      const ids = [];
+      for (const css of scrapbook.getAdoptedStyleSheets(elem)) {
+        let id = adoptedStyleSheetMap.get(css);
+        if (typeof id === 'undefined') {
+          id = adoptedStyleSheetMap.size;
+          adoptedStyleSheetMap.set(css, id);
+        }
+        ids.push(id);
+      }
+      if (ids.length) {
+        host.setAttribute("data-scrapbook-adoptedstylesheets", ids.join(','));
+      }
+
+      const regex = /^data-scrapbook-adoptedstylesheet-(\d+)$/;
+      for (const {nodeName: attr} of host.attributes) {
+        if (regex.test(attr)) {
+          host.removeAttribute(attr);
+        }
+      }
+      if (adoptedStyleSheetMap.size) {
+        for (const [css, id] of adoptedStyleSheetMap) {
+          const cssTexts = Array.prototype.map.call(
+            css.cssRules,
+            cssRule => cssRule.cssText,
+          );
+          host.setAttribute(`data-scrapbook-adoptedstylesheet-${id}`, cssTexts.join('\n\n'));
+        }
+      }
+    }
+
+    // handle manual slots if supported by the browser
+    if (elem instanceof ShadowRoot && elem.slotAssignment === 'manual') {
+      const slotMap = new Map();
+      const root = elem;
+      for (const elem of root.querySelectorAll('slot')) {
+        const ids = [];
+        for (const targetNode of elem.assignedNodes()) {
+          let id = slotMap.get(targetNode);
+          if (typeof id === 'undefined') {
+            id = slotMap.size;
+            slotMap.set(targetNode, id);
+          }
+          if (targetNode.nodeType === 1) {
+            targetNode.setAttribute("data-scrapbook-slot-index", id);
+          } else {
+            targetNode.before(document.createComment(`scrapbook-slot-index=${id}`));
+            targetNode.after(document.createComment(`/scrapbook-slot-index`));
+          }
+          ids.push(id);
+        }
+        if (ids.length) {
+          elem.setAttribute("data-scrapbook-slot-assigned", ids.join(','));
+        }
+      }
+    }
+
+    if (elem.nodeType !== 1) { return; }
 
     switch (elem.nodeName.toLowerCase()) {
       case "canvas": {
         try {
-          if (!scrapbook.isCanvasBlank(elem)) {
-            elem.setAttribute('data-scrapbook-canvas', elem.toDataURL());
+          const data = elem.toDataURL();
+          if (data !== scrapbook.getBlankCanvasData(elem)) {
+            elem.setAttribute("data-scrapbook-canvas", data);
           }
         } catch (ex) {
           console.error(ex);
@@ -1573,21 +2376,22 @@ if (Node && !Node.prototype.getRootNode) {
         if (typeof type === 'undefined') { break; }
         switch (type.toLowerCase()) {
           case "image":
+          case "password":
           case "file": {
             break;
           }
-          case "radio":
           case "checkbox": {
-            const checked = elem.checked;
-            if (checked !== elem.hasAttribute('checked')) {
-              elem.setAttribute('data-scrapbook-input-checked', checked);
-            }
-
             const indeterminate = elem.indeterminate;
             if (indeterminate) {
               elem.setAttribute('data-scrapbook-input-indeterminate', '');
             }
-
+          }
+          // eslint-disable-next-line no-fallthrough
+          case "radio": {
+            const checked = elem.checked;
+            if (checked !== elem.hasAttribute('checked')) {
+              elem.setAttribute('data-scrapbook-input-checked', checked);
+            }
             break;
           }
           default: {
@@ -1618,13 +2422,25 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    const shadowRoot = mapShadowRoot && mapShadowRoot.get(elem) || elem.shadowRoot;
+    const shadowRoot = scrapbook.getShadowRoot(elem);
     if (shadowRoot) {
       scrapbook.htmlify(shadowRoot, options);
-      elem.setAttribute('data-scrapbook-shadowroot', JSON.stringify({
-        data: shadowRoot.innerHTML,
-        mode: shadowRoot.mode,
-      }));
+      elem.setAttribute("data-scrapbook-shadowdom", shadowRoot.innerHTML);
+      if (shadowRoot.mode !== 'open') {
+        elem.setAttribute("data-scrapbook-shadowdom-mode", shadowRoot.mode);
+      }
+      if (shadowRoot.clonable) {
+        elem.setAttribute("data-scrapbook-shadowdom-clonable", "");
+      }
+      if (shadowRoot.delegatesFocus) {
+        elem.setAttribute("data-scrapbook-shadowdom-delegates-focus", "");
+      }
+      if (shadowRoot.serializable) {
+        elem.setAttribute("data-scrapbook-shadowdom-serializable", "");
+      }
+      if (shadowRoot.slotAssignment && shadowRoot.slotAssignment !== 'named') {
+        elem.setAttribute("data-scrapbook-shadowdom-slot-assignment", shadowRoot.slotAssignment);
+      }
     }
   };
 
@@ -1648,8 +2464,6 @@ if (Node && !Node.prototype.getRootNode) {
    * @param {boolean} [options.shadowDom] - true to handle shadowDom.
    */
   scrapbook.unhtmlifyElem = function (elem, options = {}) {
-    if (elem.nodeType !== 1) { return; }
-
     const {
       apply = true,
       canvas = true,
@@ -1657,7 +2471,95 @@ if (Node && !Node.prototype.getRootNode) {
       shadowDom = true,
     } = options;
 
-    if (canvas) {
+    // handle adoptedStyleSheet
+    if (shadowDom && elem instanceof ShadowRoot) {
+      const regex = /^data-scrapbook-adoptedstylesheet-(\d+)$/;
+      const host = elem.host;
+
+      const cssIndexes = host.getAttribute('data-scrapbook-adoptedstylesheets');
+      if (cssIndexes !== null && apply && 'adoptedStyleSheets' in document) {
+        for (const idx of cssIndexes.split(',')) {
+          const attr = `data-scrapbook-adoptedstylesheet-${parseInt(idx, 10)}`;
+          const sel = `[${attr}]`;
+          const refElem = host.getRootNode().querySelector(sel);
+          if (!refElem) { continue; }
+          const cssText = refElem.getAttribute(attr);
+          if (cssText === null) { continue; }
+          const css = new CSSStyleSheet();
+          const cssTexts = cssText.split('\n\n');
+          for (let i = cssTexts.length - 1; i >= 0; i--) {
+            try {
+              cssTexts[i] && css.insertRule(cssTexts[i]);
+            } catch (ex) {
+              console.error(ex);
+            }
+          }
+          elem.adoptedStyleSheets.push(css);
+        }
+      }
+      host.removeAttribute('data-scrapbook-adoptedstylesheets');
+      for (const attr of Array.prototype.map.call(host.attributes, n => n.nodeName)) {
+        if (regex.test(attr)) {
+          host.removeAttribute(attr);
+        }
+      }
+    }
+
+    // handle manual slots
+    if (shadowDom && elem instanceof ShadowRoot && elem.slotAssignment === 'manual') {
+      const regex = /^scrapbook-slot-index=(\d+)$/;
+      const host = elem.host;
+
+      const slotSources = [];
+      const children = host.childNodes;
+      for (let i = children.length - 1; i >= 0; i--) {
+        const node = children[i];
+        switch (node.nodeType) {
+          case Node.ELEMENT_NODE: {
+            const slotIdx = node.getAttribute("data-scrapbook-slot-index");
+            if (slotIdx !== null) {
+              slotSources[parseInt(slotIdx, 10)] = node;
+              node.removeAttribute("data-scrapbook-slot-index");
+            }
+            break;
+          }
+          case Node.COMMENT_NODE: {
+            const value = node.nodeValue;
+            const m = value.match(regex);
+            if (m) {
+              const next = node.nextSibling;
+              if (next.nodeType === 3) {
+                slotSources[parseInt(m[1], 10)] = next;
+              }
+              node.remove();
+              break;
+            } else if (value === '/scrapbook-slot-index') {
+              node.remove();
+              break;
+            }
+            break;
+          }
+        }
+      }
+
+      const rootNode = elem;
+      for (const elem of rootNode.querySelectorAll("slot")) {
+        const slotIdxes = elem.getAttribute("data-scrapbook-slot-assigned");
+        if (slotIdxes !== null && apply) {
+          const srcs = slotIdxes.split(',').map(i => slotSources[parseInt(i, 10)]);
+          try {
+            elem.assign.apply(elem, srcs);
+          } catch (ex) {
+            console.error(ex);
+          }
+        }
+        elem.removeAttribute("data-scrapbook-slot-assigned");
+      }
+    }
+
+    if (elem.nodeType !== 1) { return; }
+
+    if (canvas && elem.matches('canvas')) {
       const canvasData = elem.getAttribute('data-scrapbook-canvas');
       if (canvasData) {
         if (apply) {
@@ -1669,7 +2571,7 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    if (form) {
+    if (form && elem.matches('input[type="radio"], input[type="checkbox"]')) {
       const checked = elem.getAttribute('data-scrapbook-input-checked');
       if (checked !== null) {
         if (apply) {
@@ -1679,7 +2581,7 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    if (form) {
+    if (form && elem.matches('input[type="checkbox"]')) {
       const indeterminate = elem.getAttribute('data-scrapbook-input-indeterminate');
       if (indeterminate !== null) {
         if (apply) {
@@ -1689,7 +2591,7 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    if (form) {
+    if (form && elem.matches('input')) {
       const value = elem.getAttribute('data-scrapbook-input-value');
       if (value !== null) {
         if (apply) {
@@ -1699,7 +2601,7 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    if (form) {
+    if (form && elem.matches('textarea')) {
       const value = elem.getAttribute('data-scrapbook-textarea-value');
       if (value !== null) {
         if (apply) {
@@ -1709,7 +2611,7 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
-    if (form) {
+    if (form && elem.matches('option')) {
       const selected = elem.getAttribute('data-scrapbook-option-selected');
       if (selected !== null) {
         if (apply) {
@@ -1719,23 +2621,31 @@ if (Node && !Node.prototype.getRootNode) {
       }
     }
 
+    let shadowRoot = scrapbook.getShadowRoot(elem);
     if (shadowDom) {
-      const shadowRootJson = elem.getAttribute('data-scrapbook-shadowroot');
-      if (shadowRootJson !== null) {
-        if (apply && elem.attachShadow && !elem.shadowRoot) {
-          try {
-            const {data, mode} = JSON.parse(shadowRootJson);
-            const shadowRoot = elem.attachShadow({mode});
-            shadowRoot.innerHTML = data;
-          } catch (ex) {
-            console.error(ex);
-          }
+      const html = elem.getAttribute('data-scrapbook-shadowdom');
+      if (html !== null && apply && !shadowRoot) {
+        try {
+          let m;
+          shadowRoot = elem.attachShadow({
+            mode: (m = elem.getAttribute('data-scrapbook-shadowdom-mode')) !== null ? m : 'open',
+            clonable: elem.hasAttribute('data-scrapbook-shadowdom-clonable'),
+            delegatesFocus: elem.hasAttribute('data-scrapbook-shadowdom-delegates-focus'),
+            serializable: elem.hasAttribute('data-scrapbook-shadowdom-serializable'),
+            slotAssignment: (m = elem.getAttribute('data-scrapbook-shadowdom-slot-assignment')) !== null ? m : undefined,
+          });
+          shadowRoot.innerHTML = html;
+        } catch (ex) {
+          console.error(ex);
         }
-        elem.removeAttribute('data-scrapbook-shadowroot');
       }
+      elem.removeAttribute('data-scrapbook-shadowdom');
+      elem.removeAttribute('data-scrapbook-shadowdom-mode');
+      elem.removeAttribute('data-scrapbook-shadowdom-clonable');
+      elem.removeAttribute('data-scrapbook-shadowdom-delegates-focus');
+      elem.removeAttribute('data-scrapbook-shadowdom-serializable');
+      elem.removeAttribute('data-scrapbook-shadowdom-slot-assignment');
     }
-
-    const shadowRoot = elem.shadowRoot;
     if (shadowRoot) {
       scrapbook.unhtmlify(shadowRoot, options);
     }
@@ -1839,17 +2749,17 @@ if (Node && !Node.prototype.getRootNode) {
    * @return {integer} 1: a > b; 0: a = b; -1: a < b
    */
   scrapbook.versionCompare = function (a, b) {
-    //treat non-numerical characters as lower version
-    //replacing them with a negative number based on charcode of each character
+    // treat non-numerical characters as lower version
+    // replacing them with a negative number based on charcode of each character
     function fix(s) {
       return "." + (s.toLowerCase().charCodeAt(0) - 2147483647) + ".";
     }
 
-    a = ("" + a).replace(/[^0-9\.]/g, fix).split('.');
-    b = ("" + b).replace(/[^0-9\.]/g, fix).split('.');
+    a = ("" + a).replace(/[^0-9.]/g, fix).split('.');
+    b = ("" + b).replace(/[^0-9.]/g, fix).split('.');
     const c = Math.max(a.length, b.length);
     for (let i = 0; i < c; i++) {
-      //convert to integer the most efficient way
+      // convert to integer with the most efficient way
       a[i] = ~~a[i];
       b[i] = ~~b[i];
 
@@ -1872,14 +2782,18 @@ if (Node && !Node.prototype.getRootNode) {
   scrapbook.crop = function (str, charLimit, byteLimit, ellipsis = '...') {
     if (charLimit) {
       if (str.length > charLimit) {
-        str = str.substring(0, charLimit - ellipsis.length);
-        const lastCharCode = str.charCodeAt(str.length - 1);
+        let cutPos = charLimit - ellipsis.length;
 
-        // prevent cutting a surrogate pair
-        if (0xD800 < lastCharCode && lastCharCode < 0xDBFF) {
-          str = str.slice(0, -1);
+        // prevent cutting between a valid surrogate pair
+        {
+          const high = str.charCodeAt(cutPos - 1);
+          const low = str.charCodeAt(cutPos);
+          if (0xD800 <= high && high <= 0xDBFF && 0xDC00 <= low && low <= 0xDFFF) {
+            cutPos -= 1;
+          }
         }
 
+        str = str.substring(0, cutPos);
         str += ellipsis;
       }
     }
@@ -1890,10 +2804,10 @@ if (Node && !Node.prototype.getRootNode) {
         while (true) {
           try {
             return this.utf8ToUnicode(bytes) + ellipsis;
-          } catch(e) {
+          } catch (e) {
             // error if we cut a UTF-8 char sequence in the middle
           };
-          bytes = bytes.substring(0, bytes.length-1);
+          bytes = bytes.substring(0, bytes.length - 1);
         }
       }
     }
@@ -1906,6 +2820,7 @@ if (Node && !Node.prototype.getRootNode) {
    * @link http://stackoverflow.com/questions/105034/how-to-create-a-guid-uuid-in-javascript/21963136#21963136
    */
   scrapbook.getUuid = function () {
+    /* eslint-disable @stylistic/no-multi-spaces */
     const lut = Array(256).fill().map((_, i) => (i < 16 ? '0' : '') + (i).toString(16));
     const formatUuid = ([d0, d1, d2, d3]) =>
       lut[d0       & 0xff]        + lut[d0 >>  8 & 0xff] + lut[d0 >> 16 & 0xff] + lut[d0 >> 24 & 0xff] + '-' +
@@ -1915,6 +2830,7 @@ if (Node && !Node.prototype.getRootNode) {
       lut[d2 >> 16 & 0xff]        + lut[d2 >> 24 & 0xff] +
       lut[d3       & 0xff]        + lut[d3 >>  8 & 0xff] +
       lut[d3 >> 16 & 0xff]        + lut[d3 >> 24 & 0xff];
+    /* eslint-enable @stylistic/no-multi-spaces */
 
     const getRandomValuesFunc = crypto && crypto.getRandomValues ?
       () => {
@@ -1940,7 +2856,7 @@ if (Node && !Node.prototype.getRootNode) {
     const map = {
       "&": "&amp;",
       "<": "&lt;",
-      ">": "&gt;"
+      ">": "&gt;",
     };
     const fn = scrapbook.escapeHtml = function (str, noDoubleQuotes, singleQuotes, spaces) {
       map['"'] = noDoubleQuotes ? '"' : "&quot;";
@@ -1961,10 +2877,10 @@ if (Node && !Node.prototype.getRootNode) {
     const map = {
       "&amp;": "&",
       "&lt;": "<",
-      "&gt;" : ">",
-      "&quot;" : '"',
-      "&apos;" : "'",
-      "&nbsp;" : " "
+      "&gt;": ">",
+      "&quot;": '"',
+      "&apos;": "'",
+      "&nbsp;": " ",
     };
     const fn = scrapbook.unescapeHtml = function (str) {
       return str.replace(regex, func);
@@ -1984,17 +2900,17 @@ if (Node && !Node.prototype.getRootNode) {
   };
 
   scrapbook.escapeHtmlComment = function (str) {
-    const regex = /-([\u200B]*)-/g;
+    const regex = /-([\u200B]*)(?=-)/g;
     const fn = scrapbook.escapeHtmlComment = function (str) {
-      return str.replace(regex, "-\u200B$1-");
+      return str.replace(regex, "-\u200B$1");
     };
     return fn(str);
   };
 
   scrapbook.unescapeHtmlComment = function (str) {
-    const regex = /-[\u200B]([\u200B]*)-/g;
+    const regex = /-[\u200B]([\u200B]*)(?=-)/g;
     const fn = scrapbook.unescapeHtmlComment = function (str) {
-      return str.replace(regex, "-$1-");
+      return str.replace(regex, "-$1");
     };
     return fn(str);
   };
@@ -2023,27 +2939,37 @@ if (Node && !Node.prototype.getRootNode) {
     return fn(str);
   };
 
-  scrapbook.unescapeCss = function (str) {
-    const replaceRegex = /\\(?:([0-9A-Fa-f]{1,6}) ?|(.))/g;
-    const getCodes = function (n) {
-      if (n < 0x10000) return [n];
-      n -= 0x10000;
-      return [0xD800+(n>>10), 0xDC00+(n&0x3FF)];
+  /**
+   * @param {string} str - The string to unescape.
+   * @param {Object} [options]
+   * @param {Object} [options.stripNewline] - Strip escaped newline.
+   * @return {string} The unescaped CSS string.
+   */
+  scrapbook.unescapeCss = function (...args) {
+    const replaceRegex = /\\(?:([0-9A-Fa-f]{1,6}) ?|((\r\n?|[\n\f])|[\s\S]))/gu;
+    const replaceFunc = (m, u, c, nl) => {
+      if (u) {
+        const code = parseInt(u, 16);
+        if (code === 0 || (code >= 0xD800 && code <= 0xDFFF) || (code > 0x10FFFF)) {
+          return '\uFFFD';
+        }
+        return String.fromCodePoint(code);
+      }
+      if (nl && replaceOptions.stripNewline) { return ''; }
+      return c;
     };
-    const replaceFunc = function (m, u, c) {
-      if (c) { return c; }
-      if (u) { return String.fromCharCode.apply(null, getCodes(parseInt(u, 16))); }
-    };
-    const fn = scrapbook.unescapeCss = function (str) {
+    let replaceOptions;
+    const fn = scrapbook.unescapeCss = function (str, options = {}) {
+      replaceOptions = options;
       return str.replace(replaceRegex, replaceFunc);
     };
-    return fn(str);
+    return fn(...args);
   };
 
   scrapbook.quoteXPath = function (str) {
     const parts = str.split('"');
-    return parts.length > 1 ? 
-        ('concat("' + parts.join(`",'"',"`) + '")') : 
+    return parts.length > 1 ?
+        ('concat("' + parts.join(`",'"',"`) + '")') :
         `"${str}"`;
   };
 
@@ -2069,7 +2995,7 @@ if (Node && !Node.prototype.getRootNode) {
   scrapbook.unicodeToDataUri = function (str, mime) {
     const regex = /[\x00-\x1F\x7F "'#%<>[\]^`{|}]+/g;
     const func = m => encodeURIComponent(m);
-    const fn = scrapbook.unicodeToDataUri = (str, mime) =>  {
+    const fn = scrapbook.unicodeToDataUri = (str, mime) => {
       return `data:${(mime || "")};charset=UTF-8,${str.replace(regex, func)}`;
     };
     return fn(str, mime);
@@ -2079,20 +3005,18 @@ if (Node && !Node.prototype.getRootNode) {
     return `data:${mime || ""}${charset ? ";charset=" + encodeURIComponent(charset) : ""},${escape(str)}`;
   };
 
-  scrapbook.unicodeToUtf8 = function (chars) {
-    return unescape(encodeURIComponent(chars));
+  /**
+   * Convert a JavaScript string (UTF-16BE) into a UTF-8 byte string.
+   */
+  scrapbook.unicodeToUtf8 = function (str) {
+    return unescape(encodeURIComponent(str));
   };
 
-  scrapbook.utf8ToUnicode = function (bytes) {
-    return decodeURIComponent(escape(bytes));
-  };
-
-  scrapbook.unicodeToBase64 = function (str) {
-    return btoa(unescape(encodeURIComponent(str)));
-  };
-
-  scrapbook.base64ToUnicode = function (str) {
-    return decodeURIComponent(escape(atob(str)));
+  /**
+   * Convert a UTF-8 byte string into a JavaScript string (UTF-16BE).
+   */
+  scrapbook.utf8ToUnicode = function (bstr) {
+    return decodeURIComponent(escape(bstr));
   };
 
   /**
@@ -2104,12 +3028,6 @@ if (Node && !Node.prototype.getRootNode) {
     let shaObj = new jsSHA("SHA-1", type);
     shaObj.update(data);
     return shaObj.getHash("HEX");
-  };
-
-  scrapbook.intToFixedStr = function (number, width, padder) {
-    padder = padder || "0";
-    number = number.toString(10);
-    return number.length >= width ? number : new Array(width - number.length + 1).join(padder) + number;
   };
 
   /**
@@ -2164,12 +3082,27 @@ if (Node && !Node.prototype.getRootNode) {
    * Usually used for HTML parsing.
    */
   scrapbook.trim = function (str) {
-    const regexLeading = /^[\t\n\f\r ]+/;
-    const regexTrailing = /[\t\n\f\r ]+$/;
+    const regexLeading = new RegExp(`^[${ASCII_WHITESPACE}]+`);
+    const regexTrailing = new RegExp(`[${ASCII_WHITESPACE}]+$`);
     const trim = scrapbook.trim = (str) => {
-      return str.replace(regexLeading, '').replace(regexTrailing, '');
+      return (str || '').replace(regexLeading, '').replace(regexTrailing, '');
     };
     return trim(str);
+  };
+
+  /**
+   * Split by ASCII whitespaces and discard empty components.
+   *
+   * Usually used for HTML parsing.
+   */
+  scrapbook.split = function (str) {
+    const regex = new RegExp(`[${ASCII_WHITESPACE}]+`);
+    const filter = x => !!x;
+    const split = scrapbook.split = (str) => {
+      const parts = (str || '').split(regex);
+      return (str || '').split(regex).filter(filter);
+    };
+    return split(str);
   };
 
   /**
@@ -2185,7 +3118,7 @@ if (Node && !Node.prototype.getRootNode) {
     // ref: https://url.spec.whatwg.org/#percent-encoded-bytes
     // reserved = :/?#[]@!$&'()*+,;=
     const percentEncodingRegex = /%(?:[0-9A-F]{2}(?:%[0-9A-F]{2})*)?/gi;
-    const fixPathnameRegex = /[^:\/[\]@!$&'()*+,;=]+/g;
+    const fixPathnameRegex = /[^:/[\]@!$&'()*+,;=]+/g;
     const extraReservedCharsRegex = /[!*'()]+/g;  // these are not covered by encodeURIComponent
 
     const fixPathnameReplace = str => str.replace(percentEncodingRegex, fixPathnameReplace2);
@@ -2240,6 +3173,26 @@ if (Node && !Node.prototype.getRootNode) {
     } else if (scrapbook.isUrlAbsolute(baseUrl)) {
       // this should not happen
       throw new Error("Unable to get a relative URL from an absolute URL to a non-absolute URL");
+    } else if (targetUrl.startsWith('//') && baseUrl.startsWith('//')) {
+      // assume that both URLs are relative to the same protocol
+      targetUrlObj = new URL('http:' + targetUrl);
+      baseUrlObj = new URL('http:' + baseUrl);
+    } else if (targetUrl.startsWith('//')) {
+      targetUrlObj = new URL('http:' + targetUrl);
+      return '//' + targetUrlObj.host + targetUrlObj.pathname + targetUrlObj.search + targetUrlObj.hash;
+    } else if (baseUrl.startsWith('//')) {
+      // this should not happen
+      throw new Error("Unable to get a relative URL from a protocol-relative URL to a non-protocol-relative URL");
+    } else if (targetUrl.startsWith('/') && baseUrl.startsWith('/')) {
+      // assume that both URLs are relative to the same host
+      targetUrlObj = new URL('file://' + targetUrl);
+      baseUrlObj = new URL('file://' + baseUrl);
+    } else if (targetUrl.startsWith('/')) {
+      targetUrlObj = new URL('file://' + targetUrl);
+      return targetUrlObj.pathname + targetUrlObj.search + targetUrlObj.hash;
+    } else if (baseUrl.startsWith('/')) {
+      // this should not happen
+      throw new Error("Unable to get a relative URL from a root-relative URL to a non-root-relative URL");
     } else {
       // assume that both URLs are realative to the same root
       targetUrlObj = new URL('file:///' + targetUrl);
@@ -2343,7 +3296,8 @@ if (Node && !Node.prototype.getRootNode) {
    *
    * ref: https://tools.ietf.org/html/rfc7231#section-3.1.1.1
    *
-   * @return {{type: string, parameters: {[charset: string]}}}
+   * @memberof scrapbook
+   * @return {{type: string, parameters: {}}}
    */
   scrapbook.parseHeaderContentType = function (string) {
     const pOWS = "[\\t ]*";
@@ -2354,24 +3308,30 @@ if (Node && !Node.prototype.getRootNode) {
     const regexParameter = new RegExp(`^${pOWS};${pOWS}(${pToken})=([^\t ;"]*(?:${pQuotedString}[^\t ;"]*)*)`);
 
     const fn = scrapbook.parseHeaderContentType = function (string) {
-      const result = {type: undefined, parameters: {}};
+      const result = {type: "", parameters: {}};
 
       if (typeof string !== 'string') {
         return result;
       }
 
-      if (regexContentType.test(string)) {
-        string = RegExp.rightContext;
-        result.type = RegExp.$1;
+      let match;
+      if (match = regexContentType.exec(string)) {
+        string = string.slice(match.index + match[0].length);
+        result.type = match[1].toLowerCase();
 
-        while (regexParameter.test(string)) {
-          string = RegExp.rightContext;
-          let field = RegExp.$1;
-          let value = RegExp.$2;
+        while (match = regexParameter.exec(string)) {
+          string = string.slice(match.index + match[0].length);
+          let field = match[1].toLowerCase();
+          let value = match[2];
+
+          // duplicated parameter is invalid, ignore it
+          if (field in result.parameters) {
+            continue;
+          }
 
           if (value.startsWith('"')) {
             // any valid value with leading '"' must be ".*"
-            value = value.slice(1, -1);
+            value = scrapbook.unescapeQuotes(value.slice(1, -1));
           }
 
           result.parameters[field] = value;
@@ -2389,8 +3349,9 @@ if (Node && !Node.prototype.getRootNode) {
    * ref: https://github.com/jshttp/content-disposition/blob/master/index.js
    *      https://tools.ietf.org/html/rfc5987#section-3.2
    *
+   * @memberof scrapbook
    * @param {string} string - The string to parse, not including "Content-Disposition: "
-   * @return {{type: ('inline'|'attachment'), parameters: {[filename: string]}}}
+   * @return {{type: string, parameters: {}}}
    */
   scrapbook.parseHeaderContentDisposition = function (string) {
     const pOWS = "[\\t ]*";
@@ -2402,27 +3363,32 @@ if (Node && !Node.prototype.getRootNode) {
     const regexExtValue = /^([^']*)'([^']*)'([^']*)$/;
 
     const fn = scrapbook.parseHeaderContentDisposition = function (string) {
-      const result = {type: undefined, parameters: {}};
+      const result = {type: "inline", parameters: {}};
 
       if (typeof string !== 'string') {
         return result;
       }
 
-      if (regexContentDisposition.test(string)) {
-        string = RegExp.rightContext;
-        result.type = RegExp.$1;
+      let match;
+      if (match = regexContentDisposition.exec(string)) {
+        string = string.slice(match.index + match[0].length);
+        result.type = match[1].toLowerCase();
 
-        while (regexDispExtParam.test(string)) {
-          string = RegExp.rightContext;
-          let field = RegExp.$1;
-          let value = RegExp.$2;
+        while (match = regexDispExtParam.exec(string)) {
+          string = string.slice(match.index + match[0].length);
+          let field = match[1].toLowerCase();
+          let value = match[2];
+
+          // duplicated parameter is invalid, ignore it
+          if (field in result.parameters) {
+            continue;
+          }
 
           try {
             if (field.endsWith('*')) {
               // ext-value
-              field = field.slice(0, -1);
-              if (regexExtValue.test(value)) {
-                let charset = RegExp.$1, lang = RegExp.$2, valueEncoded = RegExp.$3;
+              if (match = regexExtValue.exec(value)) {
+                let charset = match[1], lang = match[2], valueEncoded = match[3];
                 switch (charset.toLowerCase()) {
                   case 'iso-8859-1':
                     value = unescape(valueEncoded);
@@ -2431,16 +3397,15 @@ if (Node && !Node.prototype.getRootNode) {
                     value = decodeURIComponent(valueEncoded);
                     break;
                   default:
-                    console.error(`Unsupported charset in the extended field of header content-disposition: {charset}`);
-                    break;
+                    throw new Error(`Ignored unsupported charset for content-disposition: ${field}=${value}`);
                 }
               } else {
-                throw new Error(`Bad ext-value`);
+                throw new Error(`Ignored malformed value for content-disposition: ${field}=${value}`);
               }
             } else {
               if (value.startsWith('"')) {
                 // any valid value with leading '"' must be ".*"
-                value = value.slice(1, -1);
+                value = scrapbook.unescapeQuotes(value.slice(1, -1));
               }
             }
 
@@ -2450,6 +3415,13 @@ if (Node && !Node.prototype.getRootNode) {
             console.error(ex);
           }
         }
+      }
+
+      // overwrite field with field*
+      for (const field in result.parameters) {
+        if (!field.endsWith('*')) { continue; }
+        result.parameters[field.slice(0, -1)] = result.parameters[field];
+        delete result.parameters[field];
       }
 
       return result;
@@ -2462,23 +3434,21 @@ if (Node && !Node.prototype.getRootNode) {
    *
    * ref: https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
    *
-   * @return {{time: integer, url: string}}
+   * @memberof scrapbook
+   * @return {{time: (integer|undefined), url: (string|undefined)}}
    */
   scrapbook.parseHeaderRefresh = function (string) {
     const regex = new RegExp([
-    '^',
-    '[\\t\\n\\f\\r ]*',
-    '(\\d+)',
-    '(?:\\.[\\d.]*)?',
-    '(?:',
-        '(?=[\\t\\n\\f\\r ;,])',
-        '[\\t\\n\\f\\r ]*',
-        '[;,]?',
-        '[\\t\\n\\f\\r ]*',
-        '(?:url[\\t\\n\\f\\r ]*=[\\t\\n\\f\\r ]*)?',
-        '(.*)',
-    ')?',
-    '$',
+      '^',
+      String.raw`[${ASCII_WHITESPACE}]*`,
+      String.raw`(\d+|(?=\.))`,  // capture 1
+      String.raw`[\d.]*`,
+      '(?:',
+        String.raw`(?=[${ASCII_WHITESPACE};,])`,
+        String.raw`[${ASCII_WHITESPACE}]*[;,]?[${ASCII_WHITESPACE}]*`,
+        String.raw`(?:url[${ASCII_WHITESPACE}]*=[${ASCII_WHITESPACE}]*)?`,
+        String.raw`(?:"([^"]*)(?="|$)|'([^']*)(?='|$)|(.*)$)`,  // capture 2, 3, 4
+      ')?',
     ].join(''), 'i');
     const fn = scrapbook.parseHeaderRefresh = function (string) {
       const result = {time: undefined, url: undefined};
@@ -2489,21 +3459,8 @@ if (Node && !Node.prototype.getRootNode) {
 
       const m = string.match(regex);
       if (m) {
-        result.time = parseInt(m[1]);
-
-        let url = m[2];
-        if (url) {
-          for (const quote of ['"', "'"]) {
-            if (url.startsWith(quote)) {
-              const pos = url.indexOf(quote, 1);
-              url = url.slice(1, pos !== -1 ? pos : undefined);
-              break;
-            }
-          }
-          result.url = scrapbook.trim(url);
-        } else {
-          result.url = '';
-        }
+        result.time = parseInt(m[1] || 0, 10);
+        result.url = scrapbook.trim(m[2] || m[3] || m[4] || "");
       }
 
       return result;
@@ -2520,7 +3477,7 @@ if (Node && !Node.prototype.getRootNode) {
    * A simple tool to compress code (CSS or JavaScript)
    */
   scrapbook.compressCode = function (code) {
-    const regex = /[^\S　]+/g;
+    const regex = new RegExp(`[${ASCII_WHITESPACE}]+`, "g");
     const fn = scrapbook.compressCode = function (code) {
       return code.toString().replace(regex, " ");
     };
@@ -2569,7 +3526,7 @@ if (Node && !Node.prototype.getRootNode) {
 
   /**
    * @param {Blob} blob - The Blob of File object to be read.
-   * @param {string|false} [charset] - Read as UTF-8 if undefined and as raw bytes if falsy.
+   * @param {string|false} [charset] - Read as UTF-8 if undefined and as byte string if falsy.
    * @return {Promise<string>}
    */
   scrapbook.readFileAsText = async function (blob, charset = "UTF-8") {
@@ -2708,51 +3665,78 @@ if (Node && !Node.prototype.getRootNode) {
   /**
    * Read charset and text of a CSS file.
    *
-   * Browser normally determine the charset of a CSS file via:
-   * 1. HTTP header content-type
-   * 2. Unicode BOM in the CSS file
+   * According to the spec, the encoding of the CSS is determined by:
+   * 1. Unicode BOM in the CSS file
+   * 2. charset parameter of the Content-Type HTTP header
    * 3. @charset rule in the CSS file
-   * 4. assume it's UTF-8
+   * 4. encoding of the referring HTML document
+   * 5. assume it's utf-8
    *
-   * We save the CSS file as UTF-8 for better compatibility.
-   * For case 3, UTF-8 BOM is prepended to inactivate the @charset rule.
-   * We don't follow case 4 and read the CSS file as byte string so that
-   * the user has a chance to correct the encoding manually.
+   * ref: https://www.w3.org/TR/css-syntax-3/#input-byte-stream
+   *
+   * Note:
+   * - We save the CSS file as UTF-8 for better compatibility.
+   * - Case 2 and 4 are provided by the arguments.
+   * - For case 3, UTF-8 BOM is prepended to inactivate the @charset rule.
+   * - For case 5, we read the CSS file as byte string instead, so that the
+   *   user has a chance to correct the encoding manually afterwards.
+   *   This is safe for UTF-8 but gets a bad irrecoverable result when an
+   *   ASCII-conflicting code point is being rewritten for a multi-byte ANSI
+   *   encoding (e.g. the "許功蓋" issue for Big5), or for UTF-16.
    *
    * @param {Blob} data - The CSS file blob.
-   * @param {string} [charset] - Charset of the CSS file blob.
+   * @param {?string} [headerCharset]
+   * @param {?string} [envCharset]
    * @return {{text: string, charset: ?string}}
    */
-  scrapbook.parseCssFile = async function (data, charset) {
-    const regexAtCharset = /^@charset "([^"]*)";/;
-    const fn = scrapbook.parseCssFile = async function (data, charset) {
-      if (charset) {
-        let text = await scrapbook.readFileAsText(data, charset);
+  scrapbook.parseCssFile = async function (...args) {
+    // @charset must be exactly this pattern according to the spec:
+    // https://developer.mozilla.org/en-US/docs/Web/CSS/@charset#examples
+    // https://drafts.csswg.org/css2/#charset%E2%91%A0
+    const regexAtCharset = new RegExp(`^@charset "([\x00-\x21\x23-\x7F]*)";`);
 
-        // Add a BOM to inactivate the @charset rule
-        if (regexAtCharset.test(text)) {
-          text = "\ufeff" + text;
-        }
+    const fn = scrapbook.parseCssFile = async function (data, headerCharset, envCharset) {
+      let charset = null;
 
-        return {text, charset};
-      }
-
-      const bytes = await scrapbook.readFileAsText(data, false);
-      if (bytes.startsWith("\xEF\xBB\xBF")) {
+      let bom = await scrapbook.readFileAsText(data.slice(0, 3), false);
+      if (bom.startsWith("\xEF\xBB\xBF")) {
         charset = "UTF-8";
-      } else if (bytes.startsWith("\xFE\xFF")) {
+      } else if (bom.startsWith("\xFE\xFF")) {
         charset = "UTF-16BE";
-      } else if (bytes.startsWith("\xFF\xFE")) {
+        bom = bom.slice(0, 2);
+      } else if (bom.startsWith("\xFF\xFE")) {
         charset = "UTF-16LE";
-      } else if (bytes.startsWith("\x00\x00\xFE\xFF")) {
-        charset = "UTF-32BE";
-      } else if (bytes.startsWith("\x00\x00\xFF\xFE")) {
-        charset = "UTF-32LE";
-      } else if (regexAtCharset.test(bytes)) {
-        charset = RegExp.$1;
+        bom = bom.slice(0, 2);
+      } else {
+        bom = '';
+      }
+
+      if (!charset && headerCharset) {
+        charset = headerCharset;
+      }
+
+      let bytes;
+      if (!charset) {
+        bytes = await scrapbook.readFileAsText(data.slice(0, 1024), false);
+        const m = regexAtCharset.exec(bytes);
+        if (m) {
+          let _charset = m[1];
+
+          // replace UTF-16 with UTF-8 according to the spec
+          if (['utf-16be', 'utf-16le'].includes(_charset.toLowerCase())) {
+            _charset = 'utf-8';
+          }
+
+          charset = _charset;
+        }
+      }
+
+      if (!charset && envCharset) {
+        charset = envCharset;
       }
 
       if (charset) {
+        if (bom) { data = data.slice(bom.length); }
         let text = await scrapbook.readFileAsText(data, charset);
 
         // Add a BOM to inactivate the @charset rule
@@ -2763,9 +3747,12 @@ if (Node && !Node.prototype.getRootNode) {
         return {text, charset};
       }
 
+      if (bom) { bytes = bytes.slice(bom.length); }
+      bytes += await scrapbook.readFileAsText(data.slice(1024), false);
       return {text: bytes, charset: null};
     };
-    return await fn(data, charset);
+
+    return await fn(...args);
   };
 
   /**
@@ -2822,27 +3809,42 @@ if (Node && !Node.prototype.getRootNode) {
    * @param {Object} [options.resourceMap] - A Map to group same resources.
    */
   scrapbook.rewriteCssText = function (cssText, options) {
-    const pCm = `(?:/\\*[\\s\\S]*?(?:\\*/|$))`; // comment
-    const pSp = `(?:[\\t\\n\\f\\r ]*)`; // ASCII whitespaces
-    const pCmSp = `(?:(?:${pCm}|${pSp})*)`; // comment or space
-    const pCmSp2 = `(?:(?:${pCm}|${pSp})+)`; // comment or space, at least one
-    const pChar = `(?:\\\\.|[^\\\\"'])`; // a non-quote char or an escaped char sequence
-    const pStr = `(?:${pChar}*?)`; // string
-    const pSStr = `(?:${pCmSp}${pStr}${pCmSp})`; // comment-or-space enclosed string
-    const pDQStr = `(?:"[^\\\\"]*(?:\\\\.[^\\\\"]*)*")`; // double quoted string
-    const pSQStr = `(?:'[^\\\\']*(?:\\\\.[^\\\\']*)*')`; // single quoted string
-    const pES = `(?:(?:${pCm}|${pDQStr}|${pSQStr}|${pChar})*?)`; // embeded string
-    const pUrl = `(?:\\burl\\(${pSp}(?:${pDQStr}|${pSQStr}|${pStr})${pSp}\\))`; // URL
-    const pUrl2 = `(\\burl\\(${pSp})(${pDQStr}|${pSQStr}|${pStr})(${pSp}\\))`; // URL; catch 3
-    const pRImport = `(@import${pCmSp})(${pUrl}|${pDQStr}|${pSQStr})`; // @import; catch 2
-    const pRFontFace = `(@font-face${pCmSp}{${pES}})`; // @font-face; catch 1
-    const pRNamespace = `(@namespace${pCmSp}(?:${pStr}${pCmSp2})?${pUrl})`; // @namespace; catch 1
+    const r = String.raw;
+    const NL = r`\r\n\f`;  // newline
+
+    const pCm = r`(?:/\*[\s\S]*?(?:\*/|$))`; // comment
+    const pSp = r`(?:[${ASCII_WHITESPACE}]*)`; // ASCII whitespaces
+    const pCmSp = r`(?:(?:${pCm}|${pSp})*)`; // comment or space
+    const pCmSp2 = r`(?:(?:${pCm}|${pSp})+)`; // comment or space, at least one
+    const pEscaped = r`\\(?:[0-9A-Fa-f]{1,6} ?|[\s\S])`; // an escaped char sequence
+    const pChar = r`(?:${pEscaped}|[^\\"'])`; // a non-quote char or an escaped char sequence
+    const pStr = r`(?:${pChar}*?)`; // string
+    const pSStr = r`(?:${pCmSp}${pStr}${pCmSp})`; // comment-or-space enclosed string
+    const pDQStr = r`(?:"[^\\"]*(?:\\[\s\S][^\\"]*)*")`; // double quoted string
+    const pSQStr = r`(?:'[^\\']*(?:\\[\s\S][^\\']*)*')`; // single quoted string
+    const pES = r`(?:(?:${pCm}|${pDQStr}|${pSQStr}|${pChar})*?)`; // embeded string
+    const pUrl = r`(?:\burl\(${pSp}(?:${pDQStr}|${pSQStr}|(?!['"${ASCII_WHITESPACE}])(?:${pEscaped}|[^)])*?)${pSp}\))`; // URL
+    const pUrl2 = r`(\burl\(${pSp})(${pDQStr}|${pSQStr}|(?!['"${ASCII_WHITESPACE}])(?:${pEscaped}|[^)])*?)(${pSp}\))`; // URL; catch 3
+    const pRImport = r`(@import${pCmSp})(${pUrl}|${pDQStr}|${pSQStr})`; // @import; catch 2
+    const pRFontFace = r`(@font-face${pCmSp}{${pES}})`; // @font-face; catch 1
+    const pRNamespace = r`(@namespace${pCmSp}(?:${pStr}${pCmSp2})?${pUrl})`; // @namespace; catch 1
 
     const KEY_PREFIX = "urn:scrapbook:str:";
-    const REGEX_UUID = new RegExp(KEY_PREFIX + "([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", 'g');
+    const REGEX_UUID = new RegExp(r`${KEY_PREFIX}([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})`, 'g');
     const REGEX_RESOURCE_MAP = /^(.+?-)\d+$/;
-    const REGEX_REWRITE_CSS = new RegExp(`${pCm}|${pRImport}|${pRFontFace}|${pRNamespace}|(${pUrl})`, "gi");
+    const REGEX_REWRITE_CSS = new RegExp(r`${pEscaped}|${pDQStr}|${pSQStr}|${pCm}|${pRImport}|${pRFontFace}|${pRNamespace}|(${pUrl})`, "gi");
     const REGEX_PARSE_URL = new RegExp(pUrl2, "gi");
+    const REGEX_URL_TOKEN = new RegExp(r`^(?:\\[^${NL}]|[^${ASCII_WHITESPACE}"'(])*$`);
+
+    const REGEX_ESCAPE_CSS_STRING = /([\\"])|[\x00-\x1F\x7F]/g;
+    const FUNC_ESCAPE_CSS_STRING = (m, chr) => {
+      if (chr) { return '\\' + chr; }
+      return '\\' + m.codePointAt(0).toString(16) + ' ';
+    };
+
+    const escapeCssString = (str) => {
+      return str.replace(REGEX_ESCAPE_CSS_STRING, FUNC_ESCAPE_CSS_STRING);
+    };
 
     const fn = scrapbook.rewriteCssText = function (cssText, options = {}) {
       let mapUrlPromise;
@@ -2871,7 +3873,7 @@ if (Node && !Node.prototype.getRootNode) {
           return record + 'var(' + name + ')';
         }
 
-        return record + prefix + '"' + scrapbook.escapeQuotes(url) + '"' + postfix;
+        return record + prefix + '"' + escapeCssString(url) + '"' + postfix;
       };
 
       const handleRewritten = function (data, prefix, postfix, noResMap) {
@@ -2890,13 +3892,14 @@ if (Node && !Node.prototype.getRootNode) {
         return text.replace(REGEX_PARSE_URL, (m, pre, url, post) => {
           let rewritten;
           if (url.startsWith('"') && url.endsWith('"')) {
-            const u = scrapbook.unescapeCss(url.slice(1, -1));
+            const u = scrapbook.unescapeCss(url.slice(1, -1), {stripNewline: true});
             rewritten = callback(u);
           } else if (url.startsWith("'") && url.endsWith("'")) {
-            const u = scrapbook.unescapeCss(url.slice(1, -1));
+            const u = scrapbook.unescapeCss(url.slice(1, -1), {stripNewline: true});
             rewritten = callback(u);
           } else {
-            const u = scrapbook.unescapeCss(url.trim());
+            if (!REGEX_URL_TOKEN.test(url)) { return m; }
+            const u = scrapbook.unescapeCss(url);
             rewritten = callback(u);
           }
 
@@ -2911,10 +3914,10 @@ if (Node && !Node.prototype.getRootNode) {
           if (im2) {
             let rewritten;
             if (im2.startsWith('"') && im2.endsWith('"')) {
-              const u = scrapbook.unescapeCss(im2.slice(1, -1));
+              const u = scrapbook.unescapeCss(im2.slice(1, -1), {stripNewline: true});
               rewritten = handleRewritten(rewriteImportUrl(u), '', '', true);
             } else if (im2.startsWith("'") && im2.endsWith("'")) {
-              const u = scrapbook.unescapeCss(im2.slice(1, -1));
+              const u = scrapbook.unescapeCss(im2.slice(1, -1), {stripNewline: true});
               rewritten = handleRewritten(rewriteImportUrl(u), '', '', true);
             } else {
               rewritten = parseUrl(im2, rewriteImportUrl, true);
@@ -2962,7 +3965,14 @@ if (Node && !Node.prototype.getRootNode) {
    */
   scrapbook.rewriteSrcset = function (srcset, rewriter) {
     const KEY_PREFIX = "urn:scrapbook:str:";
-    const REGEX_SRCSET = /(\s*)([^ ,][^ ]*[^ ,])(\s*(?: [^ ,]+)?\s*(?:,|$))/g;
+    const REGEX_SRCSET = new RegExp(
+      [
+        String.raw`([${ASCII_WHITESPACE}]*)`,
+        String.raw`([^${ASCII_WHITESPACE},][^${ASCII_WHITESPACE}]*[^${ASCII_WHITESPACE},])`,
+        String.raw`([${ASCII_WHITESPACE}]*(?:[^${ASCII_WHITESPACE},]+[${ASCII_WHITESPACE}]*)?(?:,|$))`,
+      ].join(''),
+      'g',
+    );
     const REGEX_UUID = new RegExp(KEY_PREFIX + "([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", 'g');
 
     const fn = scrapbook.rewriteSrcset = function (srcset, rewriter) {
@@ -2994,6 +4004,56 @@ if (Node && !Node.prototype.getRootNode) {
       });
     };
     return fn(srcset, rewriter);
+  };
+
+  /**
+   * The function that rewrites each URL into a new URL.
+   *
+   * @callback rewriteUrlsRewriter
+   * @param {string} url
+   * @return {string|Promise<string>} The rewritten URL.
+   */
+
+  /**
+   * Rewrite a space separated URLs.
+   *
+   * @param {string} urls
+   * @param {rewriteUrlsRewriter} rewriter
+   * @return {string|Promise<string>} The rewritten URL.
+   */
+  scrapbook.rewriteUrls = function (...args) {
+    const KEY_PREFIX = "urn:scrapbook:str:";
+    const REGEX_UUID = new RegExp(KEY_PREFIX + "([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", 'g');
+
+    const fn = scrapbook.rewriteUrls = function (urls, rewriter) {
+      let mapUrlPromise;
+      const response = scrapbook.split(urls).map(url => {
+        let replacement = rewriter(url);
+        if (scrapbook.isPromise(replacement)) {
+          if (!mapUrlPromise) { mapUrlPromise = new Map(); }
+          const key = scrapbook.getUuid();
+          mapUrlPromise.set(key, replacement.then(r => {
+            mapUrlPromise.set(key, r);
+          }));
+          replacement = KEY_PREFIX + key;
+        }
+        return replacement;
+      }).join(' ');
+
+      if (!mapUrlPromise) {
+        return response;
+      }
+
+      return Promise.all(Array.from(mapUrlPromise.values())).then(() => {
+        return response.replace(REGEX_UUID, (match, key) => {
+          if (mapUrlPromise.has(key)) {
+            return mapUrlPromise.get(key);
+          }
+          return match;
+        });
+      });
+    };
+    return fn(...args);
   };
 
   /**
@@ -3106,52 +4166,114 @@ if (Node && !Node.prototype.getRootNode) {
    * the last one of those with least refresh time.
    *
    * @param {Document} doc
-   * @param {string} [refUrl] - An arbitarary reference URL. Use document.URL if not set.
+   * @param {string} [baseUrl] - An arbitarary reference URL. Use document.URL if not set.
    * @param {boolean} [includeDelayedRefresh] - Also consider meta refresh with non-0 refresh time.
    * @param {boolean} [includeNoscript] - Also consider meta refresh in <noscript>.
    * @return {string|undefined} Absolute URL of the meta refresh target.
    */
-  scrapbook.getMetaRefreshTarget = function (doc, refUrl = doc.URL,
-      includeDelayedRefresh = false, includeNoscript = false) {
+  scrapbook.getMetaRefreshTarget = function (doc, baseUrl = doc.URL,
+    includeDelayedRefresh = false, includeNoscript = false,
+  ) {
     let lastMetaRefreshTime = Infinity;
     let lastMetaRefreshUrl;
-    for (const elem of doc.querySelectorAll('meta[http-equiv="refresh"][content]')) {
+    let seenBaseElem = false;
+    for (const elem of doc.querySelectorAll('base[href], meta[http-equiv="refresh"][content]')) {
+      // update baseUrl when seeing the first base[href]
+      if (elem.matches('base') && !elem.closest('svg, math') && !seenBaseElem) {
+        baseUrl = new URL(elem.getAttribute('href'), baseUrl).href;
+        seenBaseElem = true;
+        continue;
+      }
+
       const metaRefresh = scrapbook.parseHeaderRefresh(elem.getAttribute("content"));
-      if (typeof metaRefresh.time !== 'undefined') {
-        if (includeDelayedRefresh || metaRefresh.time === 0) {
-          if (includeNoscript || !elem.closest('noscript')) {
-            if (metaRefresh.time <= lastMetaRefreshTime) {
-              lastMetaRefreshTime = metaRefresh.time;
-              lastMetaRefreshUrl = metaRefresh.url;
-            }
-          }
-        }
+      if (typeof metaRefresh.time === 'undefined') {
+        continue;
+      }
+      if (!(includeDelayedRefresh || metaRefresh.time === 0)) {
+        continue;
+      }
+      if (!(includeNoscript || !elem.closest('noscript'))) {
+        continue;
+      }
+      if (metaRefresh.time > lastMetaRefreshTime) {
+        continue;
+      }
+      lastMetaRefreshTime = metaRefresh.time;
+      lastMetaRefreshUrl = new URL(metaRefresh.url, baseUrl).href;
+    }
+    return lastMetaRefreshUrl;
+  };
+
+  /**
+   * Cross-platform way to get an appropriate selection.
+   *
+   * - Chromium:
+   *   - shadowRoot.getSelection is supported and gets the selection in the
+   *     shadowRoot.
+   *   - If a selection is made inside a shadowRoot, each selection in its
+   *     ancestor document/shadowRoot is collapsed before the shadow host.
+   *   - If a selection is made across a shadowRoot, only the selection of the
+   *     outermost root node is ranged, and selections of descendant
+   *     shadowRoots are of "None" type.
+   *   - A shadow root related selection inaccurately has .isCollapsed = true,
+   *     check with .type !== 'Range' instead.
+   * - Firefox:
+   *   - document.getSelection gets a selection with ranges, each of which is
+   *     either in the owner document or its descendant shadowRoot.
+   *   - shadowRoot.getSelection is undefined.
+   *   - A selection across a shadowRoot is not allowed and will at last be
+   *     reduced to reside only in a root node.
+   */
+  scrapbook.getSelection = function (rootNode = document) {
+    let sel = rootNode.getSelection();
+
+    getDeepSelection: {
+      if (!sel) {
+        break getDeepSelection;
+      }
+      if (!scrapbook.userAgent.is('chromium')) {
+        break getDeepSelection;
+      }
+      if (!sel.isCollapsed || sel.type === 'None') {
+        break getDeepSelection;
+      }
+      const host = sel.focusNode.childNodes[sel.focusOffset];
+      if (!host) {
+        break getDeepSelection;
+      }
+      const shadowRoot = scrapbook.getShadowRoot(host);
+      if (!shadowRoot) {
+        break getDeepSelection;
+      }
+      const selDeep = scrapbook.getSelection(shadowRoot);
+      if (selDeep && selDeep.type !== 'None') {
+        sel = selDeep;
       }
     }
-    if (typeof lastMetaRefreshUrl !== 'undefined') {
-      return new URL(lastMetaRefreshUrl, refUrl).href;
-    }
+
+    return sel;
   };
 
   /**
    * Get nodes in the selected range(s).
    *
    * @param {Object} params
-   * @param {Window} params.win - The Window to operate on.
-   * @param {Range} [params.range] - The Range object to get selected nodes within.
+   * @param {Document|ShadowRoot|Range|Range[]} [params.query] - The query to find nodes.
    * @param {integer} [params.whatToShow] - Filter for allowed node types.
    * @param {Function} [params.nodeFilter] - A function to filter allowed nodes.
    * @param {boolean} [params.fuzzy] - Include partially selected nodes.
    * @return {Node[]} Nodes in the selected range(s).
    */
-  scrapbook.getSelectedNodes = function ({win = window, range, whatToShow = -1, nodeFilter, fuzzy = false}) {
-    const doc = win.document;
-    const result = [];
-    const ranges = range ? [range] : scrapbook.getSelectionRanges(win);
+  scrapbook.getSelectedNodes = function ({query = document, whatToShow = -1, nodeFilter, fuzzy = false}) {
+    const ranges = query.nodeType ? scrapbook.getSelectionRanges(query) :
+        Array.isArray(query) ? query : [query];
+    const result = new Set();
     for (let range of ranges) {
       if (range.collapsed) {
         continue;
       }
+
+      const doc = range.commonAncestorContainer.ownerDocument;
 
       // A fuzzy match can include an ancestor of the selected nodes,
       // and thus we must traverse all nodes in the document.
@@ -3182,19 +4304,23 @@ if (Node && !Node.prototype.getRootNode) {
             }
             return NodeFilter.FILTER_SKIP;
           },
-        }
+        },
       );
       let node;
       while (node = walker.nextNode()) {
-        result.push(node);
+        result.add(node);
       }
     }
-    return result;
+    return Array.from(result);
   };
 
-  scrapbook.getSelectionRanges = function (win = window) {
-    let result = [];
-    const sel = win.getSelection();
+  /**
+   * @param {Document|ShadowRoot|Selection} [query]
+   * @return {Range[]} The selected ranges.
+   */
+  scrapbook.getSelectionRanges = function (query = document) {
+    const sel = query.nodeType ? scrapbook.getSelection(query) : query;
+    const result = [];
     if (sel) {
       for (let i = 0; i < sel.rangeCount; i++) {
         result.push(sel.getRangeAt(i));
@@ -3206,16 +4332,15 @@ if (Node && !Node.prototype.getRootNode) {
   /**
    * See scrapbook.getSafeRanges() for details.
    */
-  scrapbook.getSafeSelectionRanges = function (win = window) {
-    let result = [];
-    const sel = win.getSelection();
-    if (sel) {
-      for (let i = 0; i < sel.rangeCount; i++) {
-        const range = sel.getRangeAt(i);
-        result = result.concat(scrapbook.getSafeRanges(range, win.document));
+  scrapbook.getSafeSelectionRanges = function (query) {
+    const CHUNK_SIZE = 32767;
+    return scrapbook.getSelectionRanges(query).reduce((result, range) => {
+      const ranges = scrapbook.getSafeRanges(range);
+      for (let i = 0, I = ranges.length; i < I; i += CHUNK_SIZE) {
+        result.push.apply(result, ranges.slice(i, i + CHUNK_SIZE));
       }
-    }
-    return result;
+      return result;
+    }, []);
   };
 
   /**
@@ -3238,7 +4363,7 @@ if (Node && !Node.prototype.getRootNode) {
       for (let i = 0; i < s.length; i++) {
         const xs = doc.createRange();
         if (i) {
-          xs.setStartAfter(s[i-1]);
+          xs.setStartAfter(s[i - 1]);
           xs.setEnd(s[i], s[i].childNodes.length);
         } else {
           xs.setStart(s[i], dangerous.startOffset);
@@ -3263,7 +4388,7 @@ if (Node && !Node.prototype.getRootNode) {
         const xe = doc.createRange();
         if (i) {
           xe.setStart(e[i], 0);
-          xe.setEndBefore(e[i-1]);
+          xe.setEndBefore(e[i - 1]);
         } else {
           if ([3, 4, 8].includes(e[i].nodeType)) {
             xe.setStartBefore(e[i]);
@@ -3312,14 +4437,71 @@ if (Node && !Node.prototype.getRootNode) {
   };
 
   /**
-   * Check if a canvas is blank.
+   * Get data URL of a blank canvas.
    */
-  scrapbook.isCanvasBlank = function (canvas) {
-    const context = canvas.getContext('2d');
-    const pixelBuffer = new Uint32Array(
-      context.getImageData(0, 0, canvas.width, canvas.height).data.buffer
-    );
-    return pixelBuffer.every(color => color === 0);
+  scrapbook.getBlankCanvasData = function (canvas) {
+    const blank = document.createElement('canvas');
+    blank.width = canvas.width;
+    blank.height = canvas.height;
+    return blank.toDataURL();
+  };
+
+  scrapbook.getOffsetInSource = function (root, node, offset) {
+    let pos = 0;
+    let tmpParent = node.parentNode;
+    let tmpSibling = node.previousSibling;
+
+    switch (node.nodeName) {
+      case "#text":
+        pos += textToHtmlOffset(node, offset);
+        break;
+      case "#comment":
+        pos += ("<!--").length + offset;
+        break;
+      case "#cdata-section":
+        pos += ("<![CDATA[").length + offset;
+        break;
+      default:
+        tmpParent = node;
+        tmpSibling = node.childNodes[offset - 1];
+        break;
+    }
+
+    while (tmpParent) {
+      while (tmpSibling) {
+        switch (tmpSibling.nodeName) {
+          case "#text":
+            pos += textToHtmlOffset(tmpSibling);
+            break;
+          case "#comment":
+            pos += ("<!--" + tmpSibling.textContent + "-->").length;
+            break;
+          case "#cdata-section":
+            pos += ("<![CDATA[" + tmpSibling.textContent + "]]>").length;
+            break;
+          default:
+            pos += tmpSibling.outerHTML.length;
+            break;
+        }
+        tmpSibling = tmpSibling.previousSibling;
+      }
+
+      pos += tmpParent.outerHTML.lastIndexOf(tmpParent.innerHTML, tmpParent.outerHTML.lastIndexOf('<'));
+
+      if (tmpParent === root) { break; }
+
+      tmpSibling = tmpParent.previousSibling;
+      tmpParent = tmpParent.parentNode;
+    }
+
+    return pos;
+
+    function textToHtmlOffset(node, offset) {
+      const content = (typeof offset === "undefined") ? node.textContent : node.textContent.substring(0, offset);
+      const span = node.ownerDocument.createElement("span");
+      span.textContent = content;
+      return span.innerHTML.length;
+    }
   };
 
 
@@ -3380,7 +4562,8 @@ if (Node && !Node.prototype.getRootNode) {
         reject(new Error("Request timeout."));
       };
 
-      xhr.responseType = params.responseType;
+      if (params.responseType) { xhr.responseType = params.responseType; }
+
       xhr.open(params.method || "GET", params.url, true, params.user, params.password);
 
       if (params.timeout) { xhr.timeout = params.timeout; }
@@ -3435,30 +4618,133 @@ if (Node && !Node.prototype.getRootNode) {
    * Miscellaneous utilities
    ***************************************************************************/
 
-  /**
-   * A polled prompt for a multi-line input.
-   */
-  scrapbook.prompt = function (message, prefill = '', linebreak = '  ') {
-    const linesNew = [];
-    const lines = prefill.split(/\n|\r?\n/g);
-    let i = 0;
-    while (true) {
-      let line = lines[i] || '';
-      if (linesNew.length < lines.length - 1) {
-        line += linebreak;
+  scrapbook.getScreenBounds = async function (refWindow, {
+    defaultLeft = scrapbook.getOption("ui.screen.left"),
+    defaultTop = scrapbook.getOption("ui.screen.top"),
+    defaultWidth = scrapbook.getOption("ui.screen.width"),
+    defaultHeight = scrapbook.getOption("ui.screen.height"),
+  } = {}) {
+    // supported by Chromium
+    if (browser.system && browser.system.display) {
+      const screens = await browser.system.display.getInfo();
+
+      if (screens) {
+        let mainScreen;
+        if (refWindow) {
+          let maxOverlapArea = 0;
+          for (const screen of screens) {
+            const workArea = screen.workArea;
+            const overlapLeft = Math.max(refWindow.left, workArea.left);
+            const overlapTop = Math.max(refWindow.top, workArea.top);
+            const overlapRight = Math.min(refWindow.left + refWindow.width, workArea.left + workArea.width);
+            const overlapBottom = Math.min(refWindow.top + refWindow.height, workArea.top + workArea.height);
+
+            if (overlapLeft < overlapRight && overlapTop < overlapBottom) {
+              const overlapWidth = overlapRight - overlapLeft;
+              const overlapHeight = overlapBottom - overlapTop;
+              const overlapArea = overlapWidth * overlapHeight;
+              if (overlapArea > maxOverlapArea) {
+                maxOverlapArea = overlapArea;
+                mainScreen = screen;
+              }
+            }
+          }
+        } else {
+          // take the main screen
+          mainScreen = screens.find((screen) => screen.isPrimary);
+        }
+        return mainScreen.workArea;
       }
-      const lineNew = prompt(message, line);
-      if (lineNew === null) {
-        return null;
-      }
-      if (!lineNew.endsWith(linebreak)) {
-        linesNew.push(lineNew);
-        break;
-      }
-      linesNew.push(lineNew.slice(0, -linebreak.length));
-      i++;
     }
-    return linesNew.join('\n');
+
+    if (typeof window !== 'undefined') {
+      return {
+        width: window.screen.availWidth,
+        height: window.screen.availHeight,
+        top: 0,
+        left: 0,
+      };
+    }
+
+    return {
+      width: defaultWidth,
+      height: defaultHeight,
+      top: defaultTop,
+      left: defaultLeft,
+    };
+  };
+
+  /**
+   * Wrapped browser.windows.create() with automatic compatibility handling.
+   */
+  scrapbook.createWindow = async function (createData) {
+    createData = Object.assign({}, createData);
+    const updateDatas = [];
+
+    if (scrapbook.userAgent.is('gecko')) {
+      let updateData = {};
+
+      // Firefox < 86: `focused` in `createData` causes an error.
+      // Firefox >= 86: ignores `focused: false` in `createData`.
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1213484
+      // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/windows/create#browser_compatibility
+      if (typeof createData.focused !== 'undefined') {
+        updateData.focused = createData.focused;
+        if (scrapbook.userAgent.major < 86) {
+          delete createData.focused;
+        }
+      }
+
+      // Firefox < 109: ignores `left` and `top` in `createData` for popups.
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1271047
+      if (scrapbook.userAgent.major < 109 && createData.type === 'popup') {
+        if (typeof createData.left !== 'undefined') {
+          updateData.left = createData.left;
+          delete createData.left;
+        }
+        if (typeof createData.top !== 'undefined') {
+          updateData.top = createData.top;
+          delete createData.top;
+        }
+      }
+
+      if (Object.keys(updateData).length) {
+        updateDatas.push(updateData);
+      }
+    }
+
+    if (['minimized', 'maximized', 'fullscreen'].includes(createData.state)) {
+      // `left`, `top`, `width`, `height`, and `focused: false` cannot be used
+      // with these states.
+      // Change state after window creation instead.
+      if (typeof createData.focused !== 'undefined'
+        || typeof createData.top !== 'undefined'
+        || typeof createData.left !== 'undefined'
+        || typeof createData.width !== 'undefined'
+        || typeof createData.height !== 'undefined'
+      ) {
+        updateDatas.push({state: createData.state});
+        delete createData.state;
+      }
+    }
+
+    const winNew = await browser.windows.create(createData);
+    for (const updateData of updateDatas) {
+      await browser.windows.update(winNew.id, updateData);
+    }
+
+    return winNew;
+  };
+
+  /**
+   * A simple modal window prompt for multi-line input.
+   */
+  scrapbook.prompt = async function (message = '', defaultValue = '') {
+    const result = await scrapbook.openModalWindow({
+      url: browser.runtime.getURL('core/prompt.html'),
+      args: {message, defaultValue},
+    });
+    return result && result.input;
   };
 
   scrapbook.getGeoLocation = async function (options) {
@@ -3497,21 +4783,65 @@ if (Node && !Node.prototype.getRootNode) {
     }, {});
   };
 
+  scrapbook.debounce = function (func, {
+    delay = 300,
+    withFlusher = false,
+    withCancler = false,
+  } = {}) {
+    let timer;
+    const fn = (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => func(...args), delay);
+    };
+    if (withFlusher) {
+      fn.flush = (...args) => {
+        clearTimeout(timer);
+        func(...args);
+      };
+    }
+    if (withCancler) {
+      fn.cancel = () => {
+        clearTimeout(timer);
+      };
+    }
+    return fn;
+  };
+
+
   /****************************************************************************
    * Zip utilities
    *
    * @require JSZip
    ***************************************************************************/
 
+  scrapbook.isCompressible = function (mimetype) {
+    if (!mimetype) {
+      return false;
+    }
+
+    if (mimetype.startsWith('text/')) {
+      return true;
+    }
+
+    if (COMPRESSIBLE_TYPES.has(mimetype)) {
+      return true;
+    }
+
+    for (const suffix of COMPRESSIBLE_SUFFIXES) {
+      if (mimetype.endsWith(suffix)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   scrapbook.zipAddFile = function (zipObj, filename, blob, options) {
     const zipOptions = Object.assign({}, options);
 
     // auto-determine compression method if not defined
     if (typeof zipOptions.compression === 'undefined') {
-      const isText = /^text\/|\b(?:xml|json|javascript)\b/.test(blob.type);
-
-      // Binary and small text data usually have poor compression rate.
-      if (isText && blob.size >= 128) {
+      if (scrapbook.isCompressible(blob.type)) {
         zipOptions.compression = "DEFLATE";
         if (!zipOptions.compressionOptions) {
           zipOptions.compressionOptions = {level: 9};

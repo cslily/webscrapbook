@@ -3,37 +3,35 @@
  * Loads and updates options automatically
  *
  * @require {Object} scrapbook
- * @public {Function} scrapbook.loadOptionsAuto
+ * @extends scrapbook
+ * @public {Promise} scrapbook.loadOptionsAuto
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('loadOptionsAuto')) { return; }
-  root.loadOptionsAuto = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    window,
-    console,
+  if (global.hasOwnProperty('loadOptionsAuto')) { return; }
+  global.loadOptionsAuto = factory(
+    global.isDebug,
+    global.scrapbook,
   );
-}(this, function (isDebug, browser, scrapbook, window, console) {
+}(this, function (isDebug, scrapbook) {
 
   'use strict';
 
   scrapbook.loadOptionsAuto = scrapbook.loadOptions();
 
   browser.storage.onChanged.addListener((changes, areaName) => {
-    // Config keys are stored in storage.sync and fallbacks to storage.local;
-    // cache keys are stored in storage.local and are valid JSON format.
+    // Cache keys are stored in storage.local and are valid JSON format.
     // We only update when a config key is changed.
-    if (areaName !== "sync") {
+    if (areaName === "local") {
       try {
-        for (let key in changes) { JSON.parse(key); }
+        for (const key in changes) { JSON.parse(key); }
         return;
-      } catch(ex) {}
-    }
-    for (let key in changes) {
-      scrapbook.options[key] = changes[key].newValue;
+      } catch (ex) {}
+
+      for (const key in changes) {
+        scrapbook.options[key] = 'newValue' in changes[key] ? changes[key].newValue : scrapbook.DEFAULT_OPTIONS[key];
+      }
     }
   });
 

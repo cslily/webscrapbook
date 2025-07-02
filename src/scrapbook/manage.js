@@ -4,19 +4,17 @@
  *
  * @require {Object} scrapbook
  * @require {Object} sidebar
+ * @override {string} sidebar.mode
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
   factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.sidebar,
-    window,
-    console,
+    global.isDebug,
+    global.scrapbook,
+    global.sidebar,
   );
-}(this, function (isDebug, browser, scrapbook, sidebar, window, console) {
+}(this, function (isDebug, scrapbook, sidebar) {
 
   'use strict';
 

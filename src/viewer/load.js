@@ -3,20 +3,19 @@
  * Script for load.html
  *
  * @require {Object} scrapbook
+ * @require {Object} JSZip
+ * @require {Object} Mime
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
   factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.JSZip,
-    window,
-    document,
-    console,
+    global.isDebug,
+    global.scrapbook,
+    global.JSZip,
+    global.Mime,
   );
-}(this, function (isDebug, browser, scrapbook, JSZip, window, document, console) {
+}(this, function (isDebug, scrapbook, JSZip, Mime) {
 
   'use strict';
 
@@ -49,8 +48,8 @@
   function onDragLeave(e) {
     let shouldUnMask = false;
     try {
-      if (e.target === viewer.lastDropTarget || 
-          e.target === document || 
+      if (e.target === viewer.lastDropTarget ||
+          e.target === document ||
           e.target.nodeName === "#document"/* XULDocument */) {
         shouldUnMask = true;
       }
@@ -69,7 +68,7 @@
 
     const entries = Array.prototype.map.call(
       e.dataTransfer.items,
-      x => x.webkitGetAsEntry && x.webkitGetAsEntry()
+      x => x.webkitGetAsEntry && x.webkitGetAsEntry(),
     );
 
     const files = [];
@@ -122,34 +121,32 @@
     },
 
     log(msg) {
-      logger.appendChild(document.createTextNode(msg + '\n'));
+      this.logger.appendChild(document.createTextNode(msg + '\n'));
     },
 
     error(msg) {
       const span = document.createElement('span');
       span.className = 'error';
       span.appendChild(document.createTextNode(msg + '\n'));
-      logger.appendChild(span);
+      this.logger.appendChild(span);
     },
 
     async openUrl(url, inNewTab = false) {
       if (inNewTab) {
         // In Firefox, a window.open popup is blocked by default, and the
-        // user has to manually add an exception to the popup blocker.
-        // Morever, a bug causes the notification not shown for the
-        // blocked popup.
-        // https://bugzilla.mozilla.org/show_bug.cgi?id=1396745
+        // dialog isn't shown as the main tab is immediately redirected. As a
+        // result, the user has to tweak the popup blocker setting in prior to
+        // see the popup. Use browser.tabs.create to workaround the issue.
         //
-        // browser.tabs.create fails silently in Firefox private window.
-        //
-        // browser.tabs is undefined in a Firefox addon page in a frame.
+        // @FIXME:
+        // In Firefox < 74, browser.tabs is undefined when the page is
+        // redirected from a browser.webRequest event handler (either through a
+        // blocking redirect or browser.tabs.update).
         if (scrapbook.userAgent.is('gecko')) {
           try {
-            const tab = await browser.tabs.getCurrent();
-            if (tab.incognito) { throw new Error('private window'); }
             return await browser.tabs.create({url, active: false});
           } catch (ex) {
-            // pass
+            console.error(ex);
           }
         }
 
@@ -270,13 +267,13 @@
         })();
 
         for (const [inZipPath, zipObj] of Object.entries(zip.files)) {
-          const data = new File([zipObj.dir ? "" : await zipObj.async("blob")], inZipPath.match(/([^\/]+)\/?$/)[1], {
+          const data = new File([zipObj.dir ? "" : await zipObj.async("blob")], inZipPath.match(/([^/]+)\/?$/)[1], {
             type: zipObj.dir ? "inode/directory" : Mime.lookup(inZipPath),
             lastModified: scrapbook.zipFixModifiedTime(zipObj.date),
           });
 
           const key = {table: "pageCache", id: uuid, path: inZipPath};
-          await scrapbook.cache.set(key, data);
+          await scrapbook.cache.set(key, data, 'indexedDB');
         }
 
         /* Retrieve indexFiles */
@@ -288,12 +285,14 @@
             } catch (ex) {
               this.error(ex.message);
             }
+            break;
           }
           case "htz":
           default: {
             if (zip.files["index.html"]) {
               indexFiles = ["index.html"];
             }
+            break;
           }
         }
 

@@ -6,25 +6,50 @@
  * @public {Object} editor
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('editor')) { return; }
-  root.editor = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    console,
+  if (global.hasOwnProperty('editor')) { return; }
+  global.editor = factory(
+    global.isDebug,
+    global.scrapbook,
   );
-}(this, function (isDebug, browser, scrapbook, console) {
+}(this, function (isDebug, scrapbook) {
 
   'use strict';
 
   const AUTO_EDIT_FILTER = {url: [{schemes: ["http", "https"]}]};
 
-  function onNavigationComplete(details) {
-    if (details.frameId !== 0) { return; }
+  const activeEditorTabIds = new Set();
 
-    const {url, tabId} = details;
+  function onDomContentLoaded(details) {
+    const {tabId, frameId, url} = details;
+
+    if (frameId !== 0) {
+      if (!activeEditorTabIds.has(tabId)) {
+        return;
+      }
+
+      // a frame in an active editor is loaded, run init script for it
+      return Promise.all([
+        scrapbook.invokeContentScript({
+          tabId,
+          frameId: 0,
+          cmd: "editor.getStatus",
+        }),
+        scrapbook.initContentScripts(tabId, frameId),
+      ]).then(([status, initResults]) => {
+        return scrapbook.invokeContentScript({
+          tabId,
+          frameId,
+          cmd: "editor.initFrame",
+          args: status,
+        });
+      });
+    }
+
+    // the main frame is reloaded, mark it as inactive
+    activeEditorTabIds.delete(tabId);
+
     const [urlMain, urlSearch, urlHash] = scrapbook.splitUrl(url);
 
     // skip URLs not in the backend server
@@ -49,9 +74,17 @@
   }
 
   function toggleAutoEdit() {
-    browser.webNavigation.onCompleted.removeListener(onNavigationComplete);
+    browser.webNavigation.onDOMContentLoaded.removeListener(onDomContentLoaded);
     if (scrapbook.getOption("editor.autoInit") && scrapbook.hasServer()) {
-      browser.webNavigation.onCompleted.addListener(onNavigationComplete, AUTO_EDIT_FILTER);
+      browser.webNavigation.onDOMContentLoaded.addListener(onDomContentLoaded, AUTO_EDIT_FILTER);
+    }
+  }
+
+  function registerActiveEditorTab(tabId, willEnable = true) {
+    if (willEnable) {
+      activeEditorTabIds.add(tabId);
+    } else {
+      activeEditorTabIds.delete(tabId);
     }
   }
 
@@ -64,6 +97,7 @@
 
   return {
     toggleAutoEdit,
+    registerActiveEditorTab,
   };
 
 }));

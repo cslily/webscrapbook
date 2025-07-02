@@ -5,17 +5,13 @@
  * @require {Object} scrapbook
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
   factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    window,
-    document,
-    console,
+    global.isDebug,
+    global.scrapbook,
   );
-}(this, function (isDebug, browser, scrapbook, window, document, console) {
+}(this, function (isDebug, scrapbook) {
 
   'use strict';
 
@@ -253,7 +249,7 @@
                       break;
                     }
                     if (info.inZip) {
-                      tasks[tasks.length] = 
+                      tasks[tasks.length] =
                       viewer.fetchPage({
                         inZipPath: info.inZipPath,
                         url: info.url,
@@ -292,7 +288,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
               if (elem.hasAttribute("href")) {
                 if (elem.matches('[rel~="stylesheet"]')) {
                   const info = viewer.parseUrl(elem.getAttribute("href"), refUrl);
-                  tasks[tasks.length] = 
+                  tasks[tasks.length] =
                   viewer.fetchFile({
                     inZipPath: info.inZipPath,
                     rewriteFunc: viewer.processCssFile,
@@ -310,7 +306,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
             }
 
             case "style": {
-              tasks[tasks.length] = 
+              tasks[tasks.length] =
               viewer.processCssText(elem.textContent, refUrl, recurseChain).then((response) => {
                 elem.textContent = response;
                 return response;
@@ -358,7 +354,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
                   }
                 }
 
-                tasks[tasks.length] = 
+                tasks[tasks.length] =
                 viewer.fetchPage({
                   inZipPath: info.inZipPath,
                   url: info.url,
@@ -399,7 +395,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
                 elem.setAttribute("srcset",
                   scrapbook.rewriteSrcset(elem.getAttribute("srcset"), (url) => {
                     return rewriteUrl(url, refUrl);
-                  })
+                  }),
                 );
               }
               break;
@@ -430,7 +426,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
                 elem.setAttribute("srcset",
                   scrapbook.rewriteSrcset(elem.getAttribute("srcset"), (url) => {
                     return rewriteUrl(url, refUrl);
-                  })
+                  }),
                 );
               }
               break;
@@ -443,15 +439,15 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
               break;
             }
 
-
-            // @FIXME: embed, objects, and applet don't work as in a regular web page.
             case "embed": {
               if (elem.hasAttribute("src")) {
-                try {
-                  elem.setAttribute("src", rewriteUrl(elem.getAttribute("src"), refUrl));
-                } catch (ex) {
-                  // In Firefox < 53, an error could be thrown here.
-                  // The modification still take effect, though.
+                elem.setAttribute("src", rewriteUrl(elem.getAttribute("src"), refUrl));
+
+                // In Chromium, "blob:" is still allowed even if it's not set in the
+                // content_security_policy, and thus offensive scripts could run.
+                // Replace the src with a dummy URL so that scripts are never loaded.
+                if (elem.src.startsWith('blob:')) {
+                  elem.setAttribute("src", "blob:");
                 }
               }
               break;
@@ -459,11 +455,13 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 
             case "object": {
               if (elem.hasAttribute("data")) {
-                try {
-                  elem.setAttribute("data", rewriteUrl(elem.getAttribute("data"), refUrl));
-                } catch (ex) {
-                  // In Firefox < 53, an error could be thrown here.
-                  // The modification still take effect, though.
+                elem.setAttribute("data", rewriteUrl(elem.getAttribute("data"), refUrl));
+
+                // In Chromium, "blob:" is still allowed even if it's not set in the
+                // content_security_policy, and thus offensive scripts could run.
+                // Replace the src with a dummy URL so that scripts are never loaded.
+                if (elem.data.startsWith('blob:')) {
+                  elem.setAttribute("data", "blob:");
                 }
               }
               break;
@@ -471,27 +469,31 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 
             case "applet": {
               if (elem.hasAttribute("code")) {
-                try {
-                  elem.setAttribute("code", rewriteUrl(elem.getAttribute("code"), refUrl));
-                } catch (ex) {
-                  // In Firefox < 53, an error could be thrown here.
-                  // The modification still take effect, though.
+                elem.setAttribute("code", rewriteUrl(elem.getAttribute("code"), refUrl));
+
+                // In Chromium, "blob:" is still allowed even if it's not set in the
+                // content_security_policy, and thus offensive scripts could run.
+                // Replace the src with a dummy URL so that scripts are never loaded.
+                if (elem.getAttribute("code").startsWith('blob:')) {
+                  elem.setAttribute("code", "blob:");
                 }
               }
 
               if (elem.hasAttribute("archive")) {
-                try {
-                  elem.setAttribute("archive", rewriteUrl(elem.getAttribute("archive"), refUrl));
-                } catch (ex) {
-                  // In Firefox < 53, an error could be thrown here.
-                  // The modification still take effect, though.
+                elem.setAttribute("archive", rewriteUrl(elem.getAttribute("archive"), refUrl));
+
+                // In Chromium, "blob:" is still allowed even if it's not set in the
+                // content_security_policy, and thus offensive scripts could run.
+                // Replace the src with a dummy URL so that scripts are never loaded.
+                if (elem.getAttribute("archive").startsWith('blob:')) {
+                  elem.setAttribute("archive", "blob:");
                 }
               }
               break;
             }
 
             case "form": {
-              if ( elem.hasAttribute("action") ) {
+              if (elem.hasAttribute("action")) {
                 elem.setAttribute("action", rewriteUrl(elem.getAttribute("action"), refUrl));
               }
               break;
@@ -512,7 +514,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
 
           // styles: style attribute
           if (elem.hasAttribute("style")) {
-            tasks[tasks.length] = 
+            tasks[tasks.length] =
             viewer.processCssText(elem.getAttribute("style"), refUrl, recurseChain).then((response) => {
               elem.setAttribute("style", response);
               return response;
@@ -533,12 +535,18 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
       rewriteRecursively(root, root.nodeName.toLowerCase(), rewriteNode);
 
       if (["text/html", "application/xhtml+xml"].includes(doc.contentType)) {
+        const head = doc.querySelector("head");
+
         // Reset CSS for Chromium
         const elem = doc.createElement("link");
         elem.rel = "stylesheet";
         elem.href = browser.runtime.getURL("core/reset.css");
-        const head = doc.querySelector("head");
         head.insertBefore(elem, head.firstChild);
+
+        // Force UTF-8
+        const metaElem = doc.createElement("meta");
+        metaElem.setAttribute("charset", "UTF-8");
+        head.insertBefore(metaElem, head.firstChild);
       }
 
       await Promise.all(tasks);
@@ -565,7 +573,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
         },
         rewriteBackgroundUrl(url) {
           return {url: fetcher.getUrlHash(url)};
-        }
+        },
       });
 
       await fetcher.startFetches();
@@ -713,6 +721,8 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
           const elem = e.target.closest('a[href], area[href]');
           if (!elem) { return; }
 
+          if (elem.hasAttribute('download')) { return; }
+
           const target = getTarget(elem);
           const url = elem.href;
           if (target === iframe.contentWindow) {
@@ -772,12 +782,6 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
           }
         }, false);
 
-        frame.contentWindow.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          console.error(`Form submission is forbidden for security reason.`);
-        }, false);
-
         for (const elem of frameDoc.querySelectorAll('frame, iframe')) {
           frameRegisterLinkLoader(elem);
         }
@@ -799,7 +803,7 @@ Redirecting to: <a href="${scrapbook.escapeHtml(info.url)}">${scrapbook.escapeHt
       const indexFile = viewerData.indexFile || "index.html";
 
       /* load zip content from previous cache */
-      const entries = Object.entries(await scrapbook.cache.getAll(key));
+      const entries = Object.entries(await scrapbook.cache.getAll({includes: key}, 'indexedDB'));
 
       if (!entries.length) {
         throw new Error(`Archive '${id}' does not exist or has been cleared.`);

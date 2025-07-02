@@ -8,37 +8,19 @@
  * @public {Class} CustomTree
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  root.CustomTree = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.server,
-    root.Tree,
-    window,
-    document,
-    console,
+  global.CustomTree = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.server,
+    global.Tree,
   );
-}(this, function (isDebug, browser, scrapbook, server, Tree, window, document, console) {
+}(this, function (isDebug, scrapbook, server, Tree) {
 
   'use strict';
 
-  const TREE_CLASS = 'tree-custom';
-
   class CustomTree extends Tree {
-    constructor({
-      treeElem,
-      bookId,
-    }) {
-      super({treeElem});
-      treeElem.classList.add(TREE_CLASS);
-
-      if (typeof bookId === 'string') {
-        treeElem.setAttribute('data-bookId', bookId);
-      }
-    }
-
     rebuild() {
       super.rebuild();
 

@@ -4,27 +4,65 @@
  *
  * @require {boolean} isDebug
  * @require {Object} scrapbook
+ * @require {Class} Strftime
+ * @require {Object} core
+ * @public {Object} editor
  *****************************************************************************/
 
-(function (root, factory) {
+(function (global, factory) {
   // Browser globals
-  if (root.hasOwnProperty('editor')) { return; }
-  root.editor = factory(
-    root.isDebug,
-    root.browser,
-    root.scrapbook,
-    root.Strftime,
-    window,
-    document,
-    console,
+  if (global.hasOwnProperty('editor')) { return; }
+  global.editor = factory(
+    global.isDebug,
+    global.scrapbook,
+    global.Strftime,
+    global.core,
   );
-}(this, function (isDebug, browser, scrapbook, Strftime, window, document, console) {
+}(this, function (isDebug, scrapbook, Strftime, core) {
 
   'use strict';
 
-  const SHADOW_DOM_SUPPORTED = !!document.documentElement.attachShadow;
+  // https://mimesniff.spec.whatwg.org/
+  const SCRIPT_TYPES = new Set([
+    "",
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+  ]);
+
+  const ALLOWED_SCRAPBOOK_SCRIPTS = new Set([
+    "basic-loader",
+    "annotation-loader",
+    "shadowroot-loader", // WebScrapBook < 0.69
+    "canvas-loader", // WebScrapBook < 0.69
+    "infobar-loader",
+    "custom-elements-loader",
+    "custom-script-safe",
+  ]);
 
   const LINEMARKABLE_ELEMENTS = `img, picture, canvas, input[type="image"]`;
+
+  const NON_ERASABLE_ELEMENTS = [
+    'html', 'head', 'body',
+    'scrapbook-toolbar', 'scrapbook-toolbar *',
+    '[data-scrapbook-elem="annotation-css"]',
+    '[data-scrapbook-elem="custom-css"]',
+    '[data-scrapbook-elem="custom-script"]',
+    ...[...ALLOWED_SCRAPBOOK_SCRIPTS].map(x => `[data-scrapbook-elem="${x}"]`),
+  ].join(',');
 
   const editor = {
     element: null,
@@ -70,7 +108,7 @@ height: 100vh;`;
    ***************************************************************************/
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.init = async function ({willActive = !editor.active, force = false} = {}) {
     if (!willActive) {
@@ -123,269 +161,212 @@ height: 100vh;`;
     }
 
     // generate toolbar content
-    const uid = 'scrapbook-' + scrapbook.getUuid();
-    let wrapper = editor.element = document.documentElement.appendChild(document.createElement("scrapbook-toolbar"));
-    wrapper.id = uid;
-    wrapper.setAttribute('data-scrapbook-elem', 'toolbar');
-    wrapper.setAttribute('dir', scrapbook.lang('@@bidi_dir'));
+    const host = editor.element = document.documentElement.appendChild(document.createElement("scrapbook-toolbar"));
+    host.setAttribute('data-scrapbook-elem', 'toolbar');
 
-    // Attach a shadowRoot if supported; otherwise fallback with an ID selector.
-    let sHost;
-    let sRoot;
-    if (wrapper.attachShadow) {
-      editor.internalElement = wrapper = wrapper.attachShadow({mode: 'open'});
-      sHost = `:host`;
-      sRoot = '';
-    } else {
-      editor.internalElement = wrapper;
-      sHost = `#${uid}`;
-      sRoot = `#${uid} `;
-    }
+    // Attach a shadowRoot.
+    const shadow = host.attachShadow({mode: 'closed'});
 
     // this needs to be XHTML compatible
-    wrapper.innerHTML = `\
+    shadow.innerHTML = (`\
 <style>
-${sHost} {
+:host {
   all: initial !important;
-  position: fixed !important;
-  display: block !important;
-  ${scrapbook.lang('@@bidi_start_edge')}: 0px !important;
-  bottom: 0px !important;
-  width: 100% !important;
-  height: 40px !important;
-  z-index: 2147483645 !important;
+  position: absolute !important;
 }
 
-${sHost} style {
-  display: none !important;
+#toolbar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 2147483647;
+  display: block;
+  box-sizing: border-box;
+  height: 40px;
+  border: 0 solid rgb(204, 204, 204);
+  border-width: 1px 0 0 0;
+  padding: 1px;
+  background: rgba(240, 240, 240, 0.9);
+  font-family: sans-serif;
+  white-space: nowrap;
 }
 
-${sRoot}*:not(scrapbook-toolbar-samp) {
-  visibility: unset !important;
-  opacity: unset !important;
-  position: unset !important;
-  overflow: unset !important;
-  z-index: unset !important;
-  outline: unset !important;
-  margin: unset !important;
-  border: unset !important;
-  padding: unset !important;
-  width: unset !important;
-  height: unset !important;
-  max-width: unset !important;
-  max-height: unset !important;
-  min-width: unset !important;
-  min-height: unset !important;
-  top: unset !important;
-  bottom: unset !important;
-  left: unset !important;
-  right: unset !important;
-  background: unset !important;
-  color: unset !important;
-  font: unset !important;
-  text-align: unset !important;
-  vertical-align: unset !important;
+#toolbar.top {
+  inset: 0 0 auto 0;
+  border-width: 0 0 1px 0;
 }
 
-${sRoot}scrapbook-toolbar-samp {
+#toolbar > div {
+  display: inline-block;
+}
+
+#toolbar > div[hidden] {
+  display: none;
+}
+
+#toolbar > div > button {
   all: unset;
+  user-select: none;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  background: center / 24px no-repeat transparent;
 }
 
-${sRoot}.toolbar {
-  display: block !important;
-  position: relative !important;
-  box-sizing: border-box !important;
-  padding: 1px !important;
-  border: 1px solid rgb(204, 204, 204) !important;
-  background: rgba(240, 240, 240, 0.9) none repeat scroll 0% 0% !important;
-  width: 100% !important;
-  height: 100% !important;
-  font-family: sans-serif !important;
-  white-space: nowrap !important;
+#toolbar > div > button:enabled {
+  cursor: pointer;
 }
 
-${sRoot}.toolbar > div {
-  display: inline-block !important;
+#toolbar > div > button:enabled:hover,
+#toolbar > div > button:enabled:focus {
+  border-color: #CCC;
+  background-color: #FFF;
 }
 
-${sRoot}.toolbar > div[hidden] {
-  display: none !important;
+#toolbar > div > button:enabled:active {
+  border-style: inset;
 }
 
-${sRoot}.toolbar > div > button {
-  display: inline-block !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  border: 1px solid transparent !important;
-  width: 36px !important;
-  height: 36px !important;
-  background-size: 24px 24px !important;
-  background-position: center !important;
-  background-repeat: no-repeat !important;
+#toolbar > div > button:disabled {
+  filter: grayscale(100%);
+  opacity: 0.3;
 }
 
-${sRoot}.toolbar > div > button:enabled {
-  cursor: pointer !important;
+#toolbar > div > button[checked] {
+  box-shadow: 0px 0px 10px 0px #909090 inset;
 }
 
-${sRoot}.toolbar > div > button:enabled:hover,
-${sRoot}.toolbar > div > button:enabled:focus {
-  border-color: #CCC !important;
-  background-color: #FFF !important;
+#toolbar > div > button[hidden] {
+  display: none;
 }
 
-${sRoot}.toolbar > div > button:enabled:active {
-  border-style: inset !important;
+#toolbar #toolbar-locate > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-locate.svg")}");
 }
 
-${sRoot}.toolbar > div > button:disabled {
-  filter: grayscale(100%) !important;
-  opacity: 0.3 !important;
+#toolbar #toolbar-marker > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-marker.png")}");
 }
 
-${sRoot}.toolbar > div > button[checked] {
-  box-shadow: 0px 0px 10px 0px #909090 inset !important;
+#toolbar #toolbar-annotation > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-annotation.png")}");
 }
 
-${sRoot}.toolbar > div > button[hidden] {
-  display: none !important;
+#toolbar #toolbar-eraser > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-eraser.png")}");
 }
 
-${sRoot}.toolbar .toolbar-locate > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-locate.svg")}") !important;
+#toolbar #toolbar-domEraser > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-dom-eraser.png")}");
 }
 
-${sRoot}.toolbar .toolbar-marker > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-marker.png")}") !important;
+#toolbar #toolbar-htmlEditor > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-html.png")}");
 }
 
-${sRoot}.toolbar .toolbar-annotation > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-annotation.png")}") !important;
+#toolbar #toolbar-undo > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-undo.png")}");
 }
 
-${sRoot}.toolbar .toolbar-eraser > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-eraser.png")}") !important;
+#toolbar #toolbar-save > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-save.png")}");
 }
 
-${sRoot}.toolbar .toolbar-domEraser > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-dom-eraser.png")}") !important;
+#toolbar #toolbar-close {
+  position: absolute;
+  ${scrapbook.lang('@@bidi_end_edge')}: 0;
 }
 
-${sRoot}.toolbar .toolbar-htmlEditor > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-html.png")}") !important;
+#toolbar #toolbar-close > button {
+  background-image: url("${browser.runtime.getURL("resources/edit-exit.svg")}");
+  opacity: 0.3;
 }
 
-${sRoot}.toolbar .toolbar-undo > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-undo.png")}") !important;
+#toolbar #toolbar-close > button:enabled:hover,
+#toolbar #toolbar-close > button:enabled:focus {
+  opacity: 1;
 }
 
-${sRoot}.toolbar .toolbar-save > button:first-of-type {
-  background-image: url("${browser.runtime.getURL("resources/edit-save.png")}") !important;
+#toolbar > div > ul {
+  all: unset;
+  position: absolute;
+  overflow: auto;
+  box-sizing: border-box;
+  list-style: none;
+  bottom: 40px;
+  border: 1px solid #999;
+  border-radius: 2px;
+  box-shadow: 0 0 4px 1px rgba(0, 0, 0, 0.3);
+  padding: 1px;
+  background: white;
+  max-height: calc(100vh - 40px - ${editor.scrollbar.vWidth}px - 2px);
 }
 
-${sRoot}.toolbar > div > ul {
-  display: block !important;
-  position: absolute !important;
-  overflow: auto !important;
-  box-sizing: border-box !important;
-  list-style: none !important;
-  bottom: 40px !important;
-  margin: 0 !important;
-  border: 1px solid #999 !important;
-  border-radius: 2px !important;
-  box-shadow: 0 0 4px 1px rgba(0, 0, 0, 0.3) !important;
-  padding: 1px !important;
-  background: white !important;
-  max-height: calc(100vh - 40px - ${editor.scrollbar.vWidth}px - 2px) !important;
+#toolbar.top > div > ul {
+  top: 40px;
+  bottom: auto;
 }
 
-${sRoot}.toolbar > div > ul[hidden] {
-  display: none !important;
+#toolbar > div > ul[hidden] {
+  display: none;
 }
 
-${sRoot}.toolbar > div > ul > li {
-  display: block !important;
+#toolbar > div > ul > li {
+  all: unset;
+  display: block;
 }
 
-${sRoot}.toolbar > div > ul > li > button {
-  display: block !important;
-  padding: 4px 8px !important;
-  width: 100% !important;
-  font-size: 14px !important;
-  color: #333 !important;
+#toolbar > div > ul > li > button {
+  all: unset;
+  user-select: none;
+  display: block;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  width: 100%;
+  font-size: 14px;
+  color: #333;
 }
 
-${sRoot}.toolbar > div > ul > li > button:enabled:focus {
-  outline: 1px solid rgba(125, 162, 206, 0.8) !important;
-  background: linear-gradient(rgba(235, 244, 253, 0.3), rgba(196, 221, 252, 0.8)) !important;
+#toolbar > div > ul > li > button:enabled:focus {
+  outline: 1px solid rgba(125, 162, 206, 0.8);
+  background: linear-gradient(rgba(235, 244, 253, 0.3), rgba(196, 221, 252, 0.8));
 }
 
-${sRoot}.toolbar > div > ul > li > button:enabled:hover {
-  background-color: rgba(202, 202, 202, 0.8) !important;
+#toolbar > div > ul > li > button:enabled:hover {
+  background-color: rgba(202, 202, 202, 0.8);
 }
 
-${sRoot}.toolbar > div > ul > li > button:enabled:active {
-  background-image: radial-gradient(rgba(0, 0, 0, 0.9), rgba(64, 64, 64, 0.9)) !important;
-  color: #FFFFFF !important;
+#toolbar > div > ul > li > button:enabled:active {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.9), rgba(64, 64, 64, 0.9));
+  color: #FFFFFF;
 }
 
-${sRoot}.toolbar > div > ul > li > button:disabled {
-  filter: grayscale(100%) !important;
-  opacity: 0.3 !important;
+#toolbar > div > ul > li > button:disabled {
+  filter: grayscale(100%);
+  opacity: 0.3;
 }
 
-${sRoot}.toolbar > div > ul > li > button[checked] {
-  box-shadow: 0px 0px 10px 0px #909090 inset !important;
+#toolbar > div > ul > li > button[checked] {
+  box-shadow: 0px 0px 10px 0px #909090 inset;
 }
 
-${sRoot}.toolbar > div > ul > hr {
-  display: block !important;
-  border: 1px inset #EEE !important;
-}
-
-${sRoot}.toolbar .toolbar-close {
-  display: block !important;
-  position: absolute !important;
-  top: 0 !important;
-  ${scrapbook.lang('@@bidi_end_edge')}: 0 !important;
-  margin: 3px !important;
-  width: 32px !important;
-  height: 32px !important;
-  opacity: 0.3 !important;
-}
-
-${sRoot}.toolbar .toolbar-close::before,
-${sRoot}.toolbar .toolbar-close::after {
-  content: "" !important;
-  position: absolute !important;
-  height: 4px !important;
-  width: 100% !important;
-  top: 50% !important;
-  margin-top: -2px !important;
-  background: #000 !important;
-}
-
-${sRoot}.toolbar .toolbar-close::before {
-  transform: rotate(45deg) !important;
-}
-
-${sRoot}.toolbar .toolbar-close::after {
-  transform: rotate(-45deg) !important;
-}
-
-${sRoot}.toolbar .toolbar-close:hover {
-  opacity: 1 !important;
+#toolbar > div > ul > hr {
+  all: unset;
+  display: block;
+  border: 1px inset #EEE;
 }
 </style>
-<div class="toolbar">
-  <div class="toolbar-locate" title="${scrapbook.lang('EditorButtonLocate')}">
+<div id="toolbar" dir="${scrapbook.lang('@@bidi_dir')}">
+  <div id="toolbar-locate" title="${scrapbook.lang('EditorButtonLocate')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-locate-viewDirectory">${scrapbook.lang('EditorButtonLocateViewDirectory')}</button></li>
-      <li><button class="toolbar-locate-viewSource">${scrapbook.lang('EditorButtonLocateViewSource')}</button></li>
+      <li><button id="toolbar-locate-viewSitemap">${scrapbook.lang('EditorButtonLocateViewSitemap')}</button></li>
+      <li><button id="toolbar-locate-viewDirectory">${scrapbook.lang('EditorButtonLocateViewDirectory')}</button></li>
+      <li><button id="toolbar-locate-viewSource">${scrapbook.lang('EditorButtonLocateViewSource')}</button></li>
     </ul>
   </div>
-  <div class="toolbar-marker" title="${scrapbook.lang('EditorButtonMarker')}">
+  <div id="toolbar-marker" title="${scrapbook.lang('EditorButtonMarker')}">
     <button></button>
     <ul hidden="" title="">
       <li><button><scrapbook-toolbar-samp data-scrapbook-elem="toolbar-samp">${scrapbook.lang('EditorButtonMarkerItem', [1])}</scrapbook-toolbar-samp></button></li>
@@ -402,108 +383,115 @@ ${sRoot}.toolbar .toolbar-close:hover {
       <li><button><scrapbook-toolbar-samp data-scrapbook-elem="toolbar-samp">${scrapbook.lang('EditorButtonMarkerItem', [12])}</scrapbook-toolbar-samp></button></li>
     </ul>
   </div>
-  <div class="toolbar-annotation" title="${scrapbook.lang('EditorButtonAnnotation')}">
+  <div id="toolbar-annotation" title="${scrapbook.lang('EditorButtonAnnotation')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-annotation-prev">${scrapbook.lang('EditorButtonAnnotationPrev')}</button></li>
-      <li><button class="toolbar-annotation-next">${scrapbook.lang('EditorButtonAnnotationNext')}</button></li>
+      <li><button id="toolbar-annotation-view">${scrapbook.lang('EditorButtonAnnotationView')}</button></li>
+      <li><button id="toolbar-annotation-prev">${scrapbook.lang('EditorButtonAnnotationPrev')}</button></li>
+      <li><button id="toolbar-annotation-next">${scrapbook.lang('EditorButtonAnnotationNext')}</button></li>
       <hr/>
-      <li><button class="toolbar-annotation-link">${scrapbook.lang('EditorButtonAnnotationLink')}</button></li>
-      <li><button class="toolbar-annotation-sticky">${scrapbook.lang('EditorButtonAnnotationSticky')}</button></li>
-      <li><button class="toolbar-annotation-sticky-richtext">${scrapbook.lang('EditorButtonAnnotationStickyRichText')}</button></li>
+      <li><button id="toolbar-annotation-link">${scrapbook.lang('EditorButtonAnnotationLink')}</button></li>
+      <li><button id="toolbar-annotation-sticky">${scrapbook.lang('EditorButtonAnnotationSticky')}</button></li>
+      <li><button id="toolbar-annotation-sticky-richtext">${scrapbook.lang('EditorButtonAnnotationStickyRichText')}</button></li>
     </ul>
   </div>
-  <div class="toolbar-eraser" title="${scrapbook.lang('EditorButtonEraser')}">
+  <div id="toolbar-eraser" title="${scrapbook.lang('EditorButtonEraser')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-eraser-eraseSelection">${scrapbook.lang('EditorButtonEraserSelection')}</button></li>
-      <li><button class="toolbar-eraser-eraseSelector">${scrapbook.lang('EditorButtonEraserSelector')}...</button></li>
-      <li><button class="toolbar-eraser-eraseSelectorAll">${scrapbook.lang('EditorButtonEraserSelectorAll')}...</button></li>
+      <li><button id="toolbar-eraser-eraseSelection">${scrapbook.lang('EditorButtonEraserSelection')}</button></li>
+      <li><button id="toolbar-eraser-eraseSelector">${scrapbook.lang('EditorButtonEraserSelector')}...</button></li>
+      <li><button id="toolbar-eraser-eraseSelectorAll">${scrapbook.lang('EditorButtonEraserSelectorAll')}...</button></li>
+      <li><button id="toolbar-eraser-eraseXpath">${scrapbook.lang('EditorButtonEraserXpath')}...</button></li>
+      <li><button id="toolbar-eraser-eraseXpathAll">${scrapbook.lang('EditorButtonEraserXpathAll')}...</button></li>
       <hr/>
-      <li><button class="toolbar-eraser-uneraseSelection">${scrapbook.lang('EditorButtonEraserRevertSelection')}</button></li>
-      <li><button class="toolbar-eraser-uneraseAll">${scrapbook.lang('EditorButtonEraserRevertAll')}</button></li>
+      <li><button id="toolbar-eraser-uneraseSelection">${scrapbook.lang('EditorButtonEraserRevertSelection')}</button></li>
+      <li><button id="toolbar-eraser-uneraseAll">${scrapbook.lang('EditorButtonEraserRevertAll')}</button></li>
       <hr/>
-      <li><button class="toolbar-eraser-removeEditsSelected">${scrapbook.lang('EditorButtonRemoveEditsSelection')}</button></li>
-      <li><button class="toolbar-eraser-removeEditsAll">${scrapbook.lang('EditorButtonRemoveEditsAll')}</button></li>
+      <li><button id="toolbar-eraser-removeEditsSelected">${scrapbook.lang('EditorButtonRemoveEditsSelection')}</button></li>
+      <li><button id="toolbar-eraser-removeEditsAll">${scrapbook.lang('EditorButtonRemoveEditsAll')}</button></li>
     </ul>
   </div>
-  <div class="toolbar-domEraser" title="${scrapbook.lang('EditorButtonDOMEraser')}">
+  <div id="toolbar-domEraser" title="${scrapbook.lang('EditorButtonDOMEraser')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-domEraser-expand">${scrapbook.lang('EditorButtonDOMEraserExpand', ['W'])}</button></li>
-      <li><button class="toolbar-domEraser-shrink">${scrapbook.lang('EditorButtonDOMEraserShrink', ['N'])}</button></li>
-      <li><button class="toolbar-domEraser-erase">${scrapbook.lang('EditorButtonDOMEraserErase', ['R'])}</button></li>
-      <li><button class="toolbar-domEraser-isolate">${scrapbook.lang('EditorButtonDOMEraserIsolate', ['I'])}</button></li>
+      <li><button id="toolbar-domEraser-expand">${scrapbook.lang('EditorButtonDOMEraserExpand', ['W'])}</button></li>
+      <li><button id="toolbar-domEraser-shrink">${scrapbook.lang('EditorButtonDOMEraserShrink', ['N'])}</button></li>
+      <li><button id="toolbar-domEraser-erase">${scrapbook.lang('EditorButtonDOMEraserErase', ['R'])}</button></li>
+      <li><button id="toolbar-domEraser-isolate">${scrapbook.lang('EditorButtonDOMEraserIsolate', ['I'])}</button></li>
     </ul>
   </div>
-  <div class="toolbar-htmlEditor" title="${scrapbook.lang('EditorButtonHtmlEditor')}">
+  <div id="toolbar-htmlEditor" title="${scrapbook.lang('EditorButtonHtmlEditor')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-htmlEditor-strong">${scrapbook.lang('EditorButtonHtmlEditorStrong')}</button></li>
-      <li><button class="toolbar-htmlEditor-em">${scrapbook.lang('EditorButtonHtmlEditorEm')}</button></li>
-      <li><button class="toolbar-htmlEditor-underline">${scrapbook.lang('EditorButtonHtmlEditorUnderline')}</button></li>
-      <li><button class="toolbar-htmlEditor-strike">${scrapbook.lang('EditorButtonHtmlEditorStrike')}</button></li>
+      <li><button id="toolbar-htmlEditor-strong">${scrapbook.lang('EditorButtonHtmlEditorStrong')}</button></li>
+      <li><button id="toolbar-htmlEditor-em">${scrapbook.lang('EditorButtonHtmlEditorEm')}</button></li>
+      <li><button id="toolbar-htmlEditor-underline">${scrapbook.lang('EditorButtonHtmlEditorUnderline')}</button></li>
+      <li><button id="toolbar-htmlEditor-strike">${scrapbook.lang('EditorButtonHtmlEditorStrike')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-superscript">${scrapbook.lang('EditorButtonHtmlEditorSuperscript')}</button></li>
-      <li><button class="toolbar-htmlEditor-subscript">${scrapbook.lang('EditorButtonHtmlEditorSubscript')}</button></li>
+      <li><button id="toolbar-htmlEditor-superscript">${scrapbook.lang('EditorButtonHtmlEditorSuperscript')}</button></li>
+      <li><button id="toolbar-htmlEditor-subscript">${scrapbook.lang('EditorButtonHtmlEditorSubscript')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-fgColor">${scrapbook.lang('EditorButtonHtmlEditorFgColor')}...</button></li>
-      <li><button class="toolbar-htmlEditor-bgColor">${scrapbook.lang('EditorButtonHtmlEditorBgColor')}...</button></li>
+      <li><button id="toolbar-htmlEditor-color">${scrapbook.lang('EditorButtonHtmlEditorColor')}...</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-formatBlockP">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockP')}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH1">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [1])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH2">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [2])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH3">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [3])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH4">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [4])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH5">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [5])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockH6">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [6])}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockDiv">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockDiv')}</button></li>
-      <li><button class="toolbar-htmlEditor-formatBlockPre">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockPre')}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockP">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockP')}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH1">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [1])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH2">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [2])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH3">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [3])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH4">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [4])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH5">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [5])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockH6">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockH', [6])}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockDiv">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockDiv')}</button></li>
+      <li><button id="toolbar-htmlEditor-formatBlockPre">${scrapbook.lang('EditorButtonHtmlEditorFormatBlockPre')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-listUnordered">${scrapbook.lang('EditorButtonHtmlEditorListUnordered')}</button></li>
-      <li><button class="toolbar-htmlEditor-listOrdered">${scrapbook.lang('EditorButtonHtmlEditorListOrdered')}</button></li>
+      <li><button id="toolbar-htmlEditor-listUnordered">${scrapbook.lang('EditorButtonHtmlEditorListUnordered')}</button></li>
+      <li><button id="toolbar-htmlEditor-listOrdered">${scrapbook.lang('EditorButtonHtmlEditorListOrdered')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-outdent">${scrapbook.lang('EditorButtonHtmlEditorOutdent')}</button></li>
-      <li><button class="toolbar-htmlEditor-indent">${scrapbook.lang('EditorButtonHtmlEditorIndent')}</button></li>
+      <li><button id="toolbar-htmlEditor-outdent">${scrapbook.lang('EditorButtonHtmlEditorOutdent')}</button></li>
+      <li><button id="toolbar-htmlEditor-indent">${scrapbook.lang('EditorButtonHtmlEditorIndent')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-justifyLeft">${scrapbook.lang('EditorButtonHtmlEditorJustifyLeft')}</button></li>
-      <li><button class="toolbar-htmlEditor-justifyCenter">${scrapbook.lang('EditorButtonHtmlEditorJustifyCenter')}</button></li>
-      <li><button class="toolbar-htmlEditor-justifyRight">${scrapbook.lang('EditorButtonHtmlEditorJustifyRight')}</button></li>
-      <li><button class="toolbar-htmlEditor-justifyFull">${scrapbook.lang('EditorButtonHtmlEditorJustifyFull')}</button></li>
+      <li><button id="toolbar-htmlEditor-justifyLeft">${scrapbook.lang('EditorButtonHtmlEditorJustifyLeft')}</button></li>
+      <li><button id="toolbar-htmlEditor-justifyCenter">${scrapbook.lang('EditorButtonHtmlEditorJustifyCenter')}</button></li>
+      <li><button id="toolbar-htmlEditor-justifyRight">${scrapbook.lang('EditorButtonHtmlEditorJustifyRight')}</button></li>
+      <li><button id="toolbar-htmlEditor-justifyFull">${scrapbook.lang('EditorButtonHtmlEditorJustifyFull')}</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-createLink">${scrapbook.lang('EditorButtonHtmlEditorCreateLink')}...</button></li>
-      <li><button class="toolbar-htmlEditor-hr">${scrapbook.lang('EditorButtonHtmlEditorHr')}</button></li>
-      <li><button class="toolbar-htmlEditor-todo">${scrapbook.lang('EditorButtonHtmlEditorTodo')}</button></li>
-      <li><button class="toolbar-htmlEditor-insertDate">${scrapbook.lang('EditorButtonHtmlEditorInsertDate')}</button></li>
-      <li><button class="toolbar-htmlEditor-insertHtml">${scrapbook.lang('EditorButtonHtmlEditorInsertHtml')}...</button></li>
+      <li><button id="toolbar-htmlEditor-createLink">${scrapbook.lang('EditorButtonHtmlEditorCreateLink')}...</button></li>
+      <li><button id="toolbar-htmlEditor-hr">${scrapbook.lang('EditorButtonHtmlEditorHr')}</button></li>
+      <li><button id="toolbar-htmlEditor-todo">${scrapbook.lang('EditorButtonHtmlEditorTodo')}</button></li>
+      <li><button id="toolbar-htmlEditor-insertDate">${scrapbook.lang('EditorButtonHtmlEditorInsertDate')}</button></li>
+      <li><button id="toolbar-htmlEditor-insertHtml">${scrapbook.lang('EditorButtonHtmlEditorInsertHtml')}...</button></li>
       <hr/>
-      <li><button class="toolbar-htmlEditor-removeFormat">${scrapbook.lang('EditorButtonHtmlEditorRemoveFormat')}</button></li>
-      <li><button class="toolbar-htmlEditor-unlink">${scrapbook.lang('EditorButtonHtmlEditorUnlink')}</button></li>
+      <li><button id="toolbar-htmlEditor-removeFormat">${scrapbook.lang('EditorButtonHtmlEditorRemoveFormat')}</button></li>
+      <li><button id="toolbar-htmlEditor-unlink">${scrapbook.lang('EditorButtonHtmlEditorUnlink')}</button></li>
     </ul>
   </div>
-  <div class="toolbar-undo" title="${scrapbook.lang('EditorButtonUndo')}">
+  <div id="toolbar-undo" title="${scrapbook.lang('EditorButtonUndo')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-undo-toggle" checked="">${scrapbook.lang('EditorButtonUndoToggle')}</button></li>
+      <li><button id="toolbar-undo-toggle" checked="">${scrapbook.lang('EditorButtonUndoToggle')}</button></li>
     </ul>
   </div>
-  <div class="toolbar-save" title="${scrapbook.lang('EditorButtonSave')}">
+  <div id="toolbar-save" title="${scrapbook.lang('EditorButtonSave')}">
     <button></button>
     <ul hidden="" title="">
-      <li><button class="toolbar-save-deleteErased">${scrapbook.lang('EditorButtonSaveDeleteErased')}</button></li>
-      <li><button class="toolbar-save-internalize">${scrapbook.lang('EditorButtonSaveInternalize')}</button></li>
-      <li><button class="toolbar-save-createSubPage">${scrapbook.lang('EditorButtonSaveCreateSubPage')}...</button></li>
+      <li><button id="toolbar-save-deleteErased">${scrapbook.lang('EditorButtonSaveDeleteErased')}</button></li>
+      <li><button id="toolbar-save-internalize">${scrapbook.lang('EditorButtonSaveInternalize')}</button></li>
+      <li><button id="toolbar-save-createSubPage">${scrapbook.lang('EditorButtonSaveCreateSubPage')}...</button></li>
       <hr/>
-      <li><button class="toolbar-save-editTitle">${scrapbook.lang('EditorButtonSaveEditTitle')}...</button></li>
-      <li><button class="toolbar-save-setViewport">${scrapbook.lang('EditorButtonSaveSetViewport')}...</button></li>
+      <li><button id="toolbar-save-editTitle">${scrapbook.lang('EditorButtonSaveEditTitle')}...</button></li>
+      <li><button id="toolbar-save-setViewport">${scrapbook.lang('EditorButtonSaveSetViewport')}...</button></li>
+      <hr/>
+      <li><button id="toolbar-save-pinTop">${scrapbook.lang('EditorButtonSavePinTop')}</button></li>
     </ul>
   </div>
-  <a class="toolbar-close" href="javascript:" title="${scrapbook.lang('EditorButtonClose')}"></a>
+  <div id="toolbar-close" title="${scrapbook.lang('EditorButtonClose')}">
+    <button></button>
+  </div>
 </div>
-`;
+`);
+    const wrapper = editor.internalElement = shadow.getElementById('toolbar');
 
     // locate
-    var elem = wrapper.querySelector('.toolbar-locate > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-locate > button');
     elem.addEventListener("click", (event) => {
       editor.locate();
     }, {passive: true});
@@ -514,12 +502,19 @@ ${sRoot}.toolbar .toolbar-close:hover {
     });
     elem.disabled = elem.hidden = !editor.inScrapBook;
 
-    var elem = wrapper.querySelector('.toolbar-locate-viewDirectory');
+    var elem = wrapper.querySelector('#toolbar-locate-viewSitemap');
+    elem.addEventListener("click", (event) => {
+      const u = new URL(browser.runtime.getURL("scrapbook/sitemap.html"));
+      u.searchParams.append('url', document.location.href);
+      document.location.assign(u.href);
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('#toolbar-locate-viewDirectory');
     elem.addEventListener("click", (event) => {
       document.location.assign('.');
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-locate-viewSource');
+    var elem = wrapper.querySelector('#toolbar-locate-viewSource');
     elem.addEventListener("click", (event) => {
       const url = document.documentElement.getAttribute('data-scrapbook-source');
       try {
@@ -536,10 +531,10 @@ ${sRoot}.toolbar .toolbar-close:hover {
     }, {passive: true});
 
     // marker
-    var elem = wrapper.querySelector('.toolbar-marker > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-marker > button');
     elem.addEventListener("click", async (event) => {
       await editor.updateLineMarkers();
-      const marker = wrapper.querySelector('.toolbar-marker ul button[checked] scrapbook-toolbar-samp');
+      const marker = wrapper.querySelector('#toolbar-marker ul button[checked] scrapbook-toolbar-samp');
       editor.lineMarker(marker.getAttribute('style'));
     }, {passive: true});
     elem.addEventListener("contextmenu", async (event) => {
@@ -549,20 +544,17 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(elem.nextElementSibling, event);
     });
 
-    for (const elem of wrapper.querySelectorAll('.toolbar-marker ul button')) {
+    for (const elem of wrapper.querySelectorAll('#toolbar-marker ul button')) {
       elem.addEventListener("click", (event) => {
         const elem = event.currentTarget;
-        const idx = Array.prototype.indexOf.call(wrapper.querySelectorAll('.toolbar-marker ul button'), elem);
+        const idx = Array.prototype.indexOf.call(wrapper.querySelectorAll('#toolbar-marker ul button'), elem);
         scrapbook.cache.set(editor.getStatusKey('lineMarkerSelected'), idx, 'storage'); // async
         editor.lineMarker(elem.querySelector('scrapbook-toolbar-samp').getAttribute('style'));
       }, {passive: true});
     }
 
     // annotation
-    var elem = wrapper.querySelector('.toolbar-annotation');
-    elem.hidden = !SHADOW_DOM_SUPPORTED;
-
-    var elem = wrapper.querySelector('.toolbar-annotation > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-annotation > button');
     elem.addEventListener("click", (event) => {
       editor.createSticky();
     }, {passive: true});
@@ -571,33 +563,38 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-annotation-prev');
+    var elem = wrapper.querySelector('#toolbar-annotation-view');
+    elem.addEventListener("click", (event) => {
+      editor.viewAnnotations();
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('#toolbar-annotation-prev');
     elem.addEventListener("click", (event) => {
       editor.locateAnnotation(-1);
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-annotation-next');
+    var elem = wrapper.querySelector('#toolbar-annotation-next');
     elem.addEventListener("click", (event) => {
       editor.locateAnnotation(1);
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-annotation-link');
+    var elem = wrapper.querySelector('#toolbar-annotation-link');
     elem.addEventListener("click", (event) => {
       editor.createLink();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-annotation-sticky');
+    var elem = wrapper.querySelector('#toolbar-annotation-sticky');
     elem.addEventListener("click", (event) => {
       editor.createSticky();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-annotation-sticky-richtext');
+    var elem = wrapper.querySelector('#toolbar-annotation-sticky-richtext');
     elem.addEventListener("click", (event) => {
       editor.createSticky(true);
     }, {passive: true});
 
     // eraser
-    var elem = wrapper.querySelector('.toolbar-eraser > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-eraser > button');
     elem.addEventListener("click", (event) => {
       if (event.ctrlKey) {
         editor.removeEdits(true);
@@ -616,43 +613,53 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-eraser-eraseSelection');
+    var elem = wrapper.querySelector('#toolbar-eraser-eraseSelection');
     elem.addEventListener("click", (event) => {
       editor.eraseNodes();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-eraseSelector');
+    var elem = wrapper.querySelector('#toolbar-eraser-eraseSelector');
     elem.addEventListener("click", (event) => {
       editor.eraseSelector();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-eraseSelectorAll');
+    var elem = wrapper.querySelector('#toolbar-eraser-eraseSelectorAll');
     elem.addEventListener("click", (event) => {
       editor.eraseSelector(true);
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-uneraseSelection');
+    var elem = wrapper.querySelector('#toolbar-eraser-eraseXpath');
+    elem.addEventListener("click", (event) => {
+      editor.eraseXpath();
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('#toolbar-eraser-eraseXpathAll');
+    elem.addEventListener("click", (event) => {
+      editor.eraseXpath(true);
+    }, {passive: true});
+
+    var elem = wrapper.querySelector('#toolbar-eraser-uneraseSelection');
     elem.addEventListener("click", (event) => {
       editor.uneraseNodes();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-uneraseAll');
+    var elem = wrapper.querySelector('#toolbar-eraser-uneraseAll');
     elem.addEventListener("click", (event) => {
       editor.uneraseAllNodes();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-removeEditsSelected');
+    var elem = wrapper.querySelector('#toolbar-eraser-removeEditsSelected');
     elem.addEventListener("click", (event) => {
       editor.removeEdits();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-eraser-removeEditsAll');
+    var elem = wrapper.querySelector('#toolbar-eraser-removeEditsAll');
     elem.addEventListener("click", (event) => {
       editor.removeAllEdits();
     }, {passive: true});
 
     // DOMEraser
-    var elem = wrapper.querySelector('.toolbar-domEraser > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-domEraser > button');
     elem.addEventListener("click", (event) => {
       editor.toggleDomEraser();
     }, {passive: true});
@@ -666,20 +673,20 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(menuElem, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-domEraser-expand');
+    var elem = wrapper.querySelector('#toolbar-domEraser-expand');
     elem.addEventListener("click", domEraser.expandTarget.bind(domEraser), {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-domEraser-shrink');
+    var elem = wrapper.querySelector('#toolbar-domEraser-shrink');
     elem.addEventListener("click", domEraser.shrinkTarget.bind(domEraser), {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-domEraser-erase');
+    var elem = wrapper.querySelector('#toolbar-domEraser-erase');
     elem.addEventListener("click", domEraser.eraseTarget.bind(domEraser), {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-domEraser-isolate');
+    var elem = wrapper.querySelector('#toolbar-domEraser-isolate');
     elem.addEventListener("click", domEraser.isolateTarget.bind(domEraser), {passive: true});
 
     // htmlEditor
-    var elem = wrapper.querySelector('.toolbar-htmlEditor > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor > button');
     elem.addEventListener("click", (event) => {
       editor.toggleHtmlEditor();
     }, {passive: true});
@@ -694,104 +701,101 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(menuElem, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-strong');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-strong');
     elem.addEventListener("click", htmlEditor.strong, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-em');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-em');
     elem.addEventListener("click", htmlEditor.em, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-underline');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-underline');
     elem.addEventListener("click", htmlEditor.underline, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-strike');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-strike');
     elem.addEventListener("click", htmlEditor.strike, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-superscript');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-superscript');
     elem.addEventListener("click", htmlEditor.superscript, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-subscript');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-subscript');
     elem.addEventListener("click", htmlEditor.subscript, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-fgColor');
-    elem.addEventListener("click", htmlEditor.foreColor, {passive: true});
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-color');
+    elem.addEventListener("click", htmlEditor.color, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-bgColor');
-    elem.addEventListener("click", htmlEditor.hiliteColor, {passive: true});
-
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockP');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockP');
     elem.addEventListener("click", htmlEditor.formatBlockP, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH1');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH1');
     elem.addEventListener("click", htmlEditor.formatBlockH1, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH2');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH2');
     elem.addEventListener("click", htmlEditor.formatBlockH2, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH3');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH3');
     elem.addEventListener("click", htmlEditor.formatBlockH3, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH4');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH4');
     elem.addEventListener("click", htmlEditor.formatBlockH4, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH5');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH5');
     elem.addEventListener("click", htmlEditor.formatBlockH5, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockH6');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockH6');
     elem.addEventListener("click", htmlEditor.formatBlockH6, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockDiv');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockDiv');
     elem.addEventListener("click", htmlEditor.formatBlockDiv, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-formatBlockPre');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-formatBlockPre');
     elem.addEventListener("click", htmlEditor.formatBlockPre, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-listUnordered');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-listUnordered');
     elem.addEventListener("click", htmlEditor.listUnordered, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-listOrdered');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-listOrdered');
     elem.addEventListener("click", htmlEditor.listOrdered, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-outdent');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-outdent');
     elem.addEventListener("click", htmlEditor.outdent, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-indent');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-indent');
     elem.addEventListener("click", htmlEditor.indent, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-justifyLeft');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-justifyLeft');
     elem.addEventListener("click", htmlEditor.justifyLeft, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-justifyCenter');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-justifyCenter');
     elem.addEventListener("click", htmlEditor.justifyCenter, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-justifyRight');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-justifyRight');
     elem.addEventListener("click", htmlEditor.justifyRight, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-justifyFull');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-justifyFull');
     elem.addEventListener("click", htmlEditor.justifyFull, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-createLink');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-createLink');
     elem.addEventListener("click", htmlEditor.createLink, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-hr');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-hr');
     elem.addEventListener("click", htmlEditor.hr, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-todo');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-todo');
     elem.addEventListener("click", htmlEditor.todo, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-insertDate');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-insertDate');
     elem.addEventListener("click", htmlEditor.insertDate, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-insertHtml');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-insertHtml');
     elem.addEventListener("click", htmlEditor.insertHtml, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-removeFormat');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-removeFormat');
     elem.addEventListener("click", htmlEditor.removeFormat, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-htmlEditor-unlink');
+    var elem = wrapper.querySelector('#toolbar-htmlEditor-unlink');
     elem.addEventListener("click", htmlEditor.unlink, {passive: true});
 
     // undo
-    var elem = wrapper.querySelector('.toolbar-undo > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-undo > button');
     elem.addEventListener("click", (event) => {
       editor.undo();
     }, {passive: true});
@@ -800,13 +804,13 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-undo-toggle');
+    var elem = wrapper.querySelector('#toolbar-undo-toggle');
     elem.addEventListener("click", (event) => {
       editor.toggleMutationHandler();
     }, {passive: true});
 
     // save
-    var elem = wrapper.querySelector('.toolbar-save > button:first-of-type');
+    var elem = wrapper.querySelector('#toolbar-save > button');
     elem.addEventListener("click", (event) => {
       editor.save();
     }, {passive: true});
@@ -815,35 +819,40 @@ ${sRoot}.toolbar .toolbar-close:hover {
       editor.showContextMenu(event.currentTarget.nextElementSibling, event);
     });
 
-    var elem = wrapper.querySelector('.toolbar-save-deleteErased');
+    var elem = wrapper.querySelector('#toolbar-save-deleteErased');
     elem.addEventListener("click", (event) => {
       editor.deleteErased();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-save-internalize');
+    var elem = wrapper.querySelector('#toolbar-save-internalize');
     elem.addEventListener("click", (event) => {
       editor.save({internalize: true});
     }, {passive: true});
     elem.disabled = !editor.inScrapBook;
 
-    var elem = wrapper.querySelector('.toolbar-save-createSubPage');
+    var elem = wrapper.querySelector('#toolbar-save-createSubPage');
     elem.addEventListener("click", (event) => {
       editor.createSubPage();
     }, {passive: true});
     elem.disabled = !editor.inScrapBook;
 
-    var elem = wrapper.querySelector('.toolbar-save-editTitle');
+    var elem = wrapper.querySelector('#toolbar-save-editTitle');
     elem.addEventListener("click", (event) => {
       editor.editTitle();
     }, {passive: true});
 
-    var elem = wrapper.querySelector('.toolbar-save-setViewport');
+    var elem = wrapper.querySelector('#toolbar-save-setViewport');
     elem.addEventListener("click", (event) => {
       editor.setViewport();
     }, {passive: true});
 
+    var elem = wrapper.querySelector('#toolbar-save-pinTop');
+    elem.addEventListener("click", (event) => {
+      editor.pinTop();
+    }, {passive: true});
+
     // close
-    var elem = wrapper.querySelector('.toolbar-close');
+    var elem = wrapper.querySelector('#toolbar-close > button');
     elem.addEventListener("click", (event) => {
       event.preventDefault();
       editor.close();
@@ -853,7 +862,62 @@ ${sRoot}.toolbar .toolbar-close:hover {
   };
 
   /**
-   * @kind invokable
+   * @type invokable
+   */
+  editor.initFrame = async function ({
+    active = true,
+    annotatorActive = true,
+    domEraserActive = false,
+    htmlEditorActive = false,
+    mutationHandlerActive = true,
+  }) {
+    if (active) {
+      document.documentElement.setAttribute('data-scrapbook-toolbar-active', '');
+    } else {
+      document.documentElement.removeAttribute('data-scrapbook-toolbar-active');
+    }
+    editor.annotator.toggle({willActive: annotatorActive});
+    editor.domEraser.toggle({willActive: domEraserActive});
+    editor.htmlEditor.toggle({willActive: htmlEditorActive});
+    editor.mutationHandler.toggle({willActive: mutationHandlerActive});
+  };
+
+  /**
+   * @type invokable
+   */
+  editor.getStatus = function () {
+    return {
+      active: this.active,
+      annotatorActive: editor.annotator.active,
+      domEraserActive: editor.domEraser.active,
+      htmlEditorActive: editor.htmlEditor.active,
+      mutationHandlerActive: editor.mutationHandler.active,
+    };
+  };
+
+  /**
+   * @type invokable
+   */
+  editor.openInternal = function () {
+    document.documentElement.setAttribute('data-scrapbook-toolbar-active', '');
+  };
+
+  /**
+   * @type invokable
+   */
+  editor.closeInternal = function () {
+    document.documentElement.removeAttribute('data-scrapbook-toolbar-active');
+  };
+
+  /**
+   * @type invokable
+   */
+  editor.getFocusedFrameIdInternal = function () {
+    return {frameId: core.frameId, time: editor.lastWindowBlurTime};
+  };
+
+  /**
+   * @type invokable
    */
   editor.lineMarkerInternal = function ({tagName = 'span', attrs = {}} = {}) {
     editor.addHistory();
@@ -881,16 +945,19 @@ ${sRoot}.toolbar .toolbar-close:hover {
       }
 
       const selectedNodes = scrapbook.getSelectedNodes({
-        range,
+        query: [range],
         whatToShow: NodeFilter.SHOW_ELEMENT + NodeFilter.SHOW_TEXT,
-        nodeFilter: node => node.nodeType === 3 || node.matches(LINEMARKABLE_ELEMENTS),
+
+        // Allow text nodes and LINEMARKABLE_ELEMENTS.
+        // Skip elements in a shadow root.
+        nodeFilter: node => (node.nodeType === 3 || node.matches(LINEMARKABLE_ELEMENTS)) && !(node.getRootNode() instanceof ShadowRoot),
       });
 
       // reverse the order as a range may be altered when changing a node before it
       let firstWrapper = null;
       let lastWrapper = null;
       for (const node of selectedNodes.reverse()) {
-        if (node.nodeType === 3 && /^[\t\n\f\r ]*$/.test(node.nodeValue)) {
+        if (node.nodeType === 3 && !scrapbook.trim(node.nodeValue)) {
           continue;
         }
 
@@ -917,132 +984,249 @@ ${sRoot}.toolbar .toolbar-close:hover {
     }
   };
 
-  /**
-   * @kind invokable
-   */
-  editor.locateAnnotationInternal = function (...args) {
-    const getAnnotationElems = () => {
-      const rv = [];
-      const checkedIds = new Set();
-      const nodeIterator = document.createNodeIterator(
-        document.documentElement,
-        NodeFilter.SHOW_ELEMENT,
-      );
-      let elem;
-      while (elem = nodeIterator.nextNode()) {
+  function getAnnotationElems({
+    root = document,
+    includeHidden = false,
+  } = {}) {
+    const rv = [];
+    const checkedIds = new Set();
+    const doc = root.ownerDocument || root;
+    const nodeIterator = doc.createNodeIterator(
+      root,
+      NodeFilter.SHOW_ELEMENT,
+    );
+    let elem;
+    while (elem = nodeIterator.nextNode()) {
+      if (!(scrapbook.getScrapBookObjectRemoveType(elem) > 0)) {
+        continue;
+      }
+
+      // check the first element among those with the same ID
+      const id = elem.getAttribute('data-scrapbook-id');
+      if (id !== null) {
+        if (checkedIds.has(id)) {
+          continue;
+        }
+        checkedIds.add(id);
+        elem = root.querySelector(`[data-scrapbook-id="${CSS.escape(id)}"]`);
+      }
+
+      if (!(includeHidden ? elem.isConnected : elem.offsetParent)) {
+        continue;
+      }
+
+      rv.push(elem);
+    }
+    return rv;
+  }
+
+  function getAnnotationRange(elem) {
+    const range = document.createRange();
+    range.selectNode(elem);
+
+    const id = elem.getAttribute('data-scrapbook-id');
+    if (id !== null) {
+      const otherRange = document.createRange();
+      for (const elem of document.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`)) {
         if (!(scrapbook.getScrapBookObjectRemoveType(elem) > 0)) {
           continue;
         }
 
-        // check the first element among those with the same ID
-        const id = elem.getAttribute('data-scrapbook-id');
-        if (id !== null) {
-          if (checkedIds.has(id)) {
-            continue;
-          }
-          checkedIds.add(id);
-          elem = document.querySelector(`[data-scrapbook-id="${CSS.escape(id)}"]`);
+        otherRange.selectNode(elem);
+        if (otherRange.compareBoundaryPoints(Range.END_TO_END, range) > 0) {
+          range.setEndAfter(elem);
         }
-
-        if (!elem.offsetParent) {
-          continue;
-        }
-
-        rv.push(elem);
       }
-      return rv;
-    };
+    }
 
-    const getAnnotationRange = (elem) => {
-      const range = document.createRange();
+    return range;
+  }
+
+  function getCurrentAnnotationIndex(annotationElems, refSelection = null) {
+    if (!refSelection) {
+      return -0.5;
+    }
+
+    const currentRange = getCurrentAnnotationIndexValidRange(refSelection);
+    if (!currentRange) {
+      return -0.5;
+    }
+
+    const range = document.createRange();
+    for (let i = 0, I = annotationElems.length; i < I; i++) {
+      const elem = annotationElems[i];
       range.selectNode(elem);
+      const delta = range.compareBoundaryPoints(Range.START_TO_START, currentRange);
+      if (delta === 0) {
+        return i;
+      }
+      if (delta > 0) {
+        return i - 0.5;
+      }
+    }
 
-      const id = elem.getAttribute('data-scrapbook-id');
-      if (id !== null) {
-        const otherRange = document.createRange();
-        for (const elem of document.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`)) {
-          if (!(scrapbook.getScrapBookObjectRemoveType(elem) > 0)) {
-            continue;
-          }
+    return annotationElems.length - 0.5;
+  }
 
-          otherRange.selectNode(elem);
-          if (otherRange.compareBoundaryPoints(Range.END_TO_END, range) > 0) {
-            range.setEndAfter(elem);
-          }
-        }
+  function getCurrentAnnotationIndexValidRange(sel) {
+    for (let i = 0, I = sel.rangeCount; i < I; i++) {
+      let range = sel.getRangeAt(i);
+      let ca = range.commonAncestorContainer;
+
+      // Firefox may include selection ranges for elements inside the toolbar.
+      // Exclude them to prevent an error.
+      if (editor.internalElement && editor.internalElement.contains(ca)) {
+        continue;
+      }
+
+      // if range is inside a shadow root, treat as selecting the topmost shadow host.
+      let node = ca, host;
+      while (host = node.getRootNode().host) {
+        node = host;
+      }
+      if (node !== ca) {
+        range = new Range();
+        range.selectNode(node);
       }
 
       return range;
-    };
+    }
+    return null;
+  }
 
-    const getCurrentAnnotationIndex = (annotationElems, refSelection = null) => {
-      if (!refSelection) {
-        return -0.5;
-      }
+  function getAnnotationsSummary(annotationElems) {
+    const sel = scrapbook.getSelection();
+    const currentIndex = getCurrentAnnotationIndex(annotationElems, sel);
+    const currentElem = annotationElems[currentIndex];
 
-      const currentRange = getValidRange(refSelection);
-      if (!currentRange) {
-        return -0.5;
-      }
+    const rv = [];
+    for (const elem of annotationElems) {
+      const id = elem.getAttribute('data-scrapbook-id');
+      const type = elem.getAttribute('data-scrapbook-elem');
 
-      const range = document.createRange();
-      for (let i = 0, I = annotationElems.length; i < I; i++) {
-        const elem = annotationElems[i];
-        range.selectNode(elem);
-        const delta = range.compareBoundaryPoints(Range.START_TO_START, currentRange);
-        if (delta === 0) {
-          return i;
+      switch (type) {
+        case 'linemarker': {
+          if (!id) { break; }
+          rv.push({
+            id,
+            type,
+            text: Array.prototype.reduce.call(
+              document.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`),
+              (acc, elem) => acc + elem.textContent,
+              "",
+            ),
+            note: elem.title,
+            style: elem.style.cssText,
+            ...(elem === currentElem && {highlighted: true}),
+          });
+          break;
         }
-        if (delta > 0) {
-          return i - 0.5;
+        case 'sticky': {
+          rv.push({
+            id,
+            type,
+            note: elem.textContent,
+            classes: Array.from(elem.classList),
+            ...(elem === currentElem && {highlighted: true}),
+          });
+          break;
+        }
+        case 'link-url': {
+          rv.push({
+            id,
+            type,
+            text: elem.textContent,
+            note: elem.href,
+            ...(elem === currentElem && {highlighted: true}),
+          });
+          break;
+        }
+        case 'custom': {
+          rv.push({
+            id,
+            type,
+            note: elem.textContent,
+            ...(elem === currentElem && {highlighted: true}),
+          });
+          break;
+        }
+        case 'custom-wrapper': {
+          rv.push({
+            id,
+            type,
+            text: Array.prototype.reduce.call(
+              document.querySelectorAll(`[data-scrapbook-id="${CSS.escape(id)}"]`),
+              (acc, elem) => acc + elem.textContent,
+              "",
+            ),
+            ...(elem === currentElem && {highlighted: true}),
+          });
+          break;
         }
       }
+    }
+    return rv;
+  }
 
-      return annotationElems.length - 0.5;
-    };
+  /**
+   * @type invokable
+   */
+  editor.highlightAnnotation = function ({elem, id, sel}) {
+    if (!elem && id) {
+      elem = document.querySelector(`[data-scrapbook-id="${CSS.escape(id)}"]`);
+    }
+    if (!sel) {
+      sel = scrapbook.getSelection();
+    }
 
-    const getValidRange = (sel) => {
-      for (let i = 0, I = sel.rangeCount; i < I; i++) {
-        const range = sel.getRangeAt(i);
-        // Firefox may include selection ranges for elements inside the toolbar.
-        // Exclude them to prevent an error.
-        if (editor.internalElement && editor.internalElement.contains(range.commonAncestorContainer)) {
-          continue;
-        }
-        return range;
-      }
-      return null;
-    };
-
-    const fn = editor.locateAnnotationInternal = ({offset = 0} = {}) => {
-      // collect valid annotation elements
-      const annotationElems = getAnnotationElems();
-      if (!annotationElems.length) {
-        return;
-      }
-
-      // find current annotation index
-      const sel = document.getSelection();
-      let index = getCurrentAnnotationIndex(annotationElems, sel);
-      index = offset > 0 ? Math.floor(index) : Math.ceil(index);
-
-      // apply offset
-      index = (index + offset) % annotationElems.length;
-      if (index < 0) { index += annotationElems.length; }
-
-      // select found annotation
-      const elem = annotationElems[index];
-      const range = getAnnotationRange(elem);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      elem.scrollIntoView();
-    };
-
-    return fn(...args);
+    const range = getAnnotationRange(elem);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    elem.scrollIntoView();
   };
 
   /**
-   * @kind invokable
+   * @type invokable
+   */
+  editor.viewAnnotationsInternal = async function () {
+    const annotationElems = getAnnotationElems({includeHidden: true});
+    const annotations = getAnnotationsSummary(annotationElems);
+    await scrapbook.openModalWindow({
+      url: browser.runtime.getURL('editor/annotations.html'),
+      args: {
+        annotations,
+      },
+      senderProp: 'source',
+      windowCreateData: {width: 600, height: 600},
+    });
+  };
+
+  /**
+   * @type invokable
+   */
+  editor.locateAnnotationInternal = function ({offset = 0} = {}) {
+    // collect valid annotation elements
+    const annotationElems = getAnnotationElems();
+    if (!annotationElems.length) {
+      return;
+    }
+
+    // find current annotation index
+    const sel = scrapbook.getSelection();
+    let index = getCurrentAnnotationIndex(annotationElems, sel);
+    index = offset > 0 ? Math.floor(index) : Math.ceil(index);
+
+    // apply offset
+    index = (index + offset) % annotationElems.length;
+    if (index < 0) { index += annotationElems.length; }
+
+    // highlight found annotation
+    const elem = annotationElems[index];
+    editor.highlightAnnotation({elem, sel});
+  };
+
+  /**
+   * @type invokable
    */
   editor.eraseNodesInternal = function () {
     editor.addHistory();
@@ -1050,45 +1234,53 @@ ${sRoot}.toolbar .toolbar-close:hover {
     // reverse the order as a range may be altered when changing a node before it
     const timeId = scrapbook.dateToId();
     for (const range of scrapbook.getSafeSelectionRanges().reverse()) {
-      if (!range.collapsed) {
+      if (!range.collapsed && !(range.commonAncestorContainer.getRootNode() instanceof ShadowRoot)) {
         editor.eraseRange(range, timeId);
       }
     }
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
-  editor.eraseSelectorInternal = function (...args) {
-    const FORBID_NODES = `\
-html, head, body,
-scrapbook-toolbar, scrapbook-toolbar *,
-[data-scrapbook-elem="annotation-css"],
-[data-scrapbook-elem="basic-loader"],
-[data-scrapbook-elem="annotation-loader"],
-[data-scrapbook-elem="shadowroot-loader"],
-[data-scrapbook-elem="canvas-loader"],
-[data-scrapbook-elem="custom-css"],
-[data-scrapbook-elem="custom-script"],
-[data-scrapbook-elem="custom-script-safe"]`;
-    const fn = editor.eraseSelectorInternal = ({selector}) => {
-      editor.addHistory();
+  editor.eraseSelectorInternal = function ({selector}) {
+    editor.addHistory();
 
-      const timeId = scrapbook.dateToId();
-      const elems = document.querySelectorAll(selector);
+    const timeId = scrapbook.dateToId();
+    const elems = document.querySelectorAll(selector);
 
-      // handle descendant node first as it may be altered when handling ancestor
-      for (const elem of Array.from(elems).reverse()) {
-        if (elem.matches(FORBID_NODES)) { continue; }
+    // handle descendant node first as it may be altered when handling ancestor
+    for (const elem of Array.from(elems).reverse()) {
+      if (elem.matches(NON_ERASABLE_ELEMENTS)) { continue; }
 
-        editor.eraseNode(elem, timeId);
-      }
-    };
-    return fn(...args);
+      editor.eraseNode(elem, timeId);
+    }
   };
 
   /**
-   * @kind invokable
+   * @type invokable
+   */
+  editor.eraseXpathInternal = function ({selector}) {
+    editor.addHistory();
+
+    const timeId = scrapbook.dateToId();
+    const evaluator = document.evaluate(selector, document, null);
+    const elems = [];
+    let nextElem;
+    while (nextElem = evaluator.iterateNext()) {
+      elems.push(nextElem);
+    }
+
+    // handle descendant node first as it may be altered when handling ancestor
+    for (const elem of elems.reverse()) {
+      if (elem.matches(NON_ERASABLE_ELEMENTS)) { continue; }
+
+      editor.eraseNode(elem, timeId);
+    }
+  };
+
+  /**
+   * @type invokable
    */
   editor.uneraseNodesInternal = function () {
     editor.addHistory();
@@ -1105,7 +1297,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.uneraseAllNodesInternal = function () {
     editor.addHistory();
@@ -1124,7 +1316,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
 
       // handle descendant node first as it may be altered when handling ancestor
       for (const elem of selectedNodes.reverse()) {
-        if (editor.removeScrapBookObject(elem) !== -1) {
+        if (editor.removeScrapBookObject(elem) === 3) {
           unerased = true;
         }
       }
@@ -1136,7 +1328,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.removeEditsInternal = function () {
     editor.addHistory();
@@ -1154,7 +1346,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.removeAllEditsInternal = function () {
     editor.addHistory();
@@ -1176,7 +1368,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.undoInternal = function () {
     if (!document.body) { return; }
@@ -1185,7 +1377,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.deleteErasedInternal = function () {
     editor.addHistory();
@@ -1208,7 +1400,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.editTitleInternal = function () {
     let title = prompt(scrapbook.lang('EditorButtonSaveEditTitlePrompt'), document.title);
@@ -1217,7 +1409,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   /**
-   * @kind invokable
+   * @type invokable
    */
   editor.setViewportInternal = function () {
     let viewportElem = document.querySelector('meta[name="viewport"i]');
@@ -1286,6 +1478,16 @@ scrapbook-toolbar, scrapbook-toolbar *,
         frameId: await editor.getFocusedFrameId(),
         cmd: "editor.lineMarkerInternal",
         args,
+      },
+    });
+  };
+
+  editor.viewAnnotations = async function () {
+    return await scrapbook.invokeExtensionScript({
+      cmd: "background.invokeEditorCommand",
+      args: {
+        frameId: await editor.getFocusedFrameId(),
+        cmd: "editor.viewAnnotationsInternal",
       },
     });
   };
@@ -1377,6 +1579,32 @@ scrapbook-toolbar, scrapbook-toolbar *,
     });
   };
 
+  editor.eraseXpath = async function (allFrames = false) {
+    const frameId = allFrames ? undefined : await editor.getFocusedFrameId();
+    const selector = prompt(scrapbook.lang('EditorButtonEraserXpathPrompt'));
+
+    if (!selector) {
+      return;
+    }
+
+    let evaluator;
+    try {
+      document.evaluate(selector, document, null);
+    } catch (ex) {
+      alert(scrapbook.lang('ErrorEditorButtonEraserXpathInvalid', [selector]));
+      return;
+    }
+
+    return await scrapbook.invokeExtensionScript({
+      cmd: "background.invokeEditorCommand",
+      args: {
+        frameId,
+        cmd: "editor.eraseXpathInternal",
+        args: {selector},
+      },
+    });
+  };
+
   editor.uneraseNodes = async function () {
     return await scrapbook.invokeExtensionScript({
       cmd: "background.invokeEditorCommand",
@@ -1430,7 +1658,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.toggleDomEraser = async function (willActive, ignoreAnnotator = false) {
-    const editElem = editor.internalElement.querySelector('.toolbar-domEraser > button');
+    const editElem = editor.internalElement.querySelector('#toolbar-domEraser > button');
 
     if (typeof willActive === "undefined") {
       willActive = !editElem.hasAttribute("checked");
@@ -1451,14 +1679,14 @@ scrapbook-toolbar, scrapbook-toolbar *,
     }
 
     for (const elem of editor.internalElement.querySelectorAll([
-          '.toolbar-locate > button',
-          '.toolbar-marker > button',
-          '.toolbar-annotation > button',
-          '.toolbar-eraser > button',
-          '.toolbar-htmlEditor > button',
-          '.toolbar-undo > button',
-          '.toolbar-save > button',
-        ].join(','))) {
+      '#toolbar-locate > button',
+      '#toolbar-marker > button',
+      '#toolbar-annotation > button',
+      '#toolbar-eraser > button',
+      '#toolbar-htmlEditor > button',
+      '#toolbar-undo > button',
+      '#toolbar-save > button',
+    ].join(','))) {
       elem.disabled = willActive;
     }
 
@@ -1480,7 +1708,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.toggleHtmlEditor = async function (willActive, ignoreAnnotator = false) {
-    const editElem = editor.internalElement.querySelector('.toolbar-htmlEditor > button');
+    const editElem = editor.internalElement.querySelector('#toolbar-htmlEditor > button');
 
     if (typeof willActive === "undefined") {
       willActive = !editElem.hasAttribute("checked");
@@ -1501,12 +1729,12 @@ scrapbook-toolbar, scrapbook-toolbar *,
     }
 
     for (const elem of editor.internalElement.querySelectorAll([
-          '.toolbar-marker > button',
-          '.toolbar-annotation > button',
-          '.toolbar-eraser > button',
-          '.toolbar-domEraser > button',
-          '.toolbar-undo > button'
-        ].join(','))) {
+      '#toolbar-marker > button',
+      '#toolbar-annotation > button',
+      '#toolbar-eraser > button',
+      '#toolbar-domEraser > button',
+      '#toolbar-undo > button',
+    ].join(','))) {
       elem.disabled = willActive;
     }
 
@@ -1528,7 +1756,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.toggleMutationHandler = async function (willActive) {
-    const editElem = editor.internalElement.querySelector('.toolbar-undo-toggle');
+    const editElem = editor.internalElement.querySelector('#toolbar-undo-toggle');
 
     if (typeof willActive === "undefined") {
       willActive = !editElem.hasAttribute("checked");
@@ -1618,13 +1846,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
     const title = prompt(scrapbook.lang('EditorButtonSaveCreateSubPagePrompt'));
     if (!title) { return; }
 
-    const filename = scrapbook.validateFilename(title + '.html');
-    const url = new URL(scrapbook.escapeFilename(filename), location.href).href;
-
     try {
       await scrapbook.invokeExtensionScript({
         cmd: "background.createSubPage",
-        args: {url, title},
+        args: {
+          url: location.href,
+          title,
+        },
       });
     } catch (ex) {
       console.error(ex);
@@ -1654,15 +1882,45 @@ scrapbook-toolbar, scrapbook-toolbar *,
     });
   };
 
+  editor.pinTop = async function (willActive) {
+    const editElem = editor.internalElement.querySelector('#toolbar-save-pinTop');
+
+    if (typeof willActive === "undefined") {
+      willActive = !editElem.hasAttribute("checked");
+    }
+
+    if (willActive) {
+      if (editElem.hasAttribute("checked")) {
+        // already active or is doing async activating
+        return;
+      }
+      editElem.setAttribute("checked", "");
+      editor.internalElement.classList.add('top');
+    } else {
+      if (!editElem.hasAttribute("checked")) {
+        // already inactive or is doing async deactivating
+        return;
+      }
+      editElem.removeAttribute("checked");
+      editor.internalElement.classList.remove('top');
+    }
+  };
+
   editor.open = async function () {
     if (editor.active) { return; }
 
     document.documentElement.setAttribute('data-scrapbook-toolbar-active', '');
     document.documentElement.appendChild(editor.element);
     await scrapbook.invokeExtensionScript({
+      cmd: "background.registerActiveEditorTab",
+      args: {
+        willEnable: true,
+      },
+    });
+    await scrapbook.invokeExtensionScript({
       cmd: "background.invokeEditorCommand",
       args: {
-        code: `document.documentElement.setAttribute('data-scrapbook-toolbar-active', '')`,
+        cmd: "editor.openInternal",
         frameIdExcept: 0,
       },
     });
@@ -1673,11 +1931,22 @@ scrapbook-toolbar, scrapbook-toolbar *,
     if (!editor.active) { return; }
 
     document.documentElement.removeAttribute('data-scrapbook-toolbar-active');
-    editor.element.remove();
+
+    // remove possible stale elements due to a disabled/removed extension
+    for (const elem of document.querySelectorAll('scrapbook-toolbar')) {
+      elem.remove();
+    }
+
+    await scrapbook.invokeExtensionScript({
+      cmd: "background.registerActiveEditorTab",
+      args: {
+        willEnable: false,
+      },
+    });
     await scrapbook.invokeExtensionScript({
       cmd: "background.invokeEditorCommand",
       args: {
-        code: `document.documentElement.removeAttribute('data-scrapbook-toolbar-active')`,
+        cmd: "editor.closeInternal",
         frameIdExcept: 0,
       },
     });
@@ -1711,9 +1980,33 @@ scrapbook-toolbar, scrapbook-toolbar *,
         return;
       }
 
-      if (event.code === "Escape" || event.code === "F10") {
-        event.preventDefault();
-        exitContextMenu();
+      switch (event.code) {
+        case "Escape":
+        case "F10": {
+          event.preventDefault();
+          exitContextMenu();
+          break;
+        }
+        case "ArrowUp": {
+          event.preventDefault();
+          const elems = Array.from(elem.querySelectorAll('li > button:enabled'));
+          const focusIdx = elems.findIndex((elem) => elem.matches(':focus'));
+          let idx = (focusIdx === -1) ? 0 : focusIdx - 1;
+          if (idx < 0) { idx = elems.length - 1; }
+          const target = elems[idx];
+          target && target.focus();
+          break;
+        }
+        case "ArrowDown": {
+          event.preventDefault();
+          const elems = Array.from(elem.querySelectorAll('li > button:enabled'));
+          const focusIdx = elems.findIndex((elem) => elem.matches(':focus'));
+          let idx = (focusIdx === -1) ? 0 : focusIdx + 1;
+          if (idx >= elems.length) { idx = 0; }
+          const target = elems[idx];
+          target && target.focus();
+          break;
+        }
       }
     };
 
@@ -1743,17 +2036,17 @@ scrapbook-toolbar, scrapbook-toolbar *,
       const viewport = scrapbook.getViewport(window);
 
       // reposition to leftmost to get correct offsetWidth
-      elem.style.setProperty('left', 0 + 'px', 'important');
+      elem.style.setProperty('left', 0 + 'px');
 
       const offsetX = Math.min(Math.max(clientX - toolbarButtonWidth, 0), viewport.width - toolbarBorderPadding - elem.offsetWidth);
-      elem.style.setProperty('left', offsetX + 'px', 'important');
+      elem.style.setProperty('left', offsetX + 'px');
     }
 
     // Focus on the context menu element for focusout event to work when the user
     // clicks outside.
-    const sel = window.getSelection();
+    const sel = scrapbook.getSelection();
+    const ranges = scrapbook.getSelectionRanges(sel);
     const wasCollapsed = sel.isCollapsed;
-    const ranges = scrapbook.getSelectionRanges();
 
     if (!elem.hasAttribute('tabindex')) {
       elem.setAttribute('tabindex', -1);
@@ -1775,41 +2068,12 @@ scrapbook-toolbar, scrapbook-toolbar *,
    * @return {boolean} Whether the document has a working script.
    */
   editor.isDocumentScripted = function (doc) {
-    // https://mimesniff.spec.whatwg.org/
-    const SCRIPT_TYPES = new Set([
-      "",
-      "application/ecmascript",
-      "application/javascript",
-      "application/x-ecmascript",
-      "application/x-javascript",
-      "text/ecmascript",
-      "text/javascript",
-      "text/javascript1.0",
-      "text/javascript1.1",
-      "text/javascript1.2",
-      "text/javascript1.3",
-      "text/javascript1.4",
-      "text/javascript1.5",
-      "text/jscript",
-      "text/livescript",
-      "text/x-ecmascript",
-      "text/x-javascript",
-    ]);
-    const LOADER_TYPES = new Set([
-      "basic-loader",
-      "annotation-loader",
-      "shadowroot-loader", // WebScrapBook < 0.69
-      "canvas-loader", // WebScrapBook < 0.69
-      "infobar-loader",
-      "custom-script-safe",
-    ]);
-
     for (const fdoc of scrapbook.flattenFrames(doc)) {
       for (const elem of fdoc.querySelectorAll("*")) {
         // check <script> elements
         if (elem.nodeName.toLowerCase() === 'script') {
           if (SCRIPT_TYPES.has(elem.type.toLowerCase()) &&
-              !LOADER_TYPES.has(scrapbook.getScrapbookObjectType(elem))) {
+              !ALLOWED_SCRAPBOOK_SCRIPTS.has(scrapbook.getScrapbookObjectType(elem))) {
             if (elem.src) {
               return true;
             } else if (!/^\s*(?:(?:\/\*[^*]*(?:\*(?!\/)[^*]*)*\*\/|\/\/.*)\s*)*$/.test(elem.textContent)) {
@@ -1834,13 +2098,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.updateLineMarkers = async function () {
-    for (const [i, elem] of editor.internalElement.querySelectorAll('.toolbar-marker ul scrapbook-toolbar-samp').entries()) {
+    for (const [i, elem] of editor.internalElement.querySelectorAll('#toolbar-marker ul scrapbook-toolbar-samp').entries()) {
       const style = scrapbook.getOption(`editor.lineMarker.style.${i + 1}`);
       elem.setAttribute('style', style);
       elem.title = style;
     }
 
-    const buttons = Array.from(editor.internalElement.querySelectorAll('.toolbar-marker ul button'));
+    const buttons = Array.from(editor.internalElement.querySelectorAll('#toolbar-marker ul button'));
     for (const elem of buttons) {
       elem.removeAttribute('checked');
     }
@@ -1850,7 +2114,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.updateHtmlEditorMenu = function () {
-    const elem = editor.internalElement.querySelector('.toolbar-htmlEditor-insertDate');
+    const elem = editor.internalElement.querySelector('#toolbar-htmlEditor-insertDate');
     const format = scrapbook.getOption("editor.insertDateFormat");
     const isUtc = scrapbook.getOption("editor.insertDateFormatIsUtc");
     const sample = Strftime.format(format, {isUtc});
@@ -1865,17 +2129,14 @@ scrapbook-toolbar, scrapbook-toolbar *,
     const arr = await scrapbook.invokeExtensionScript({
       cmd: "background.invokeEditorCommand",
       args: {
-        code: "({frameId: core.frameId, time: editor.lastWindowBlurTime})",
+        cmd: "editor.getFocusedFrameIdInternal",
         frameIdExcept: 0,
       },
     });
 
     const lastFrame = arr.reduce((acc, cur) => {
-      if (cur) {
-        cur = cur[0];
-        if (cur.time > acc.time) {
-          return cur;
-        }
+      if (cur && cur.time > acc.time) {
+        return cur;
       }
       return acc;
     }, {frameId: 0, time: -1});
@@ -1904,7 +2165,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
     try {
       // not in the DOM tree, skip
       if (!node.isConnected) { return -1; }
-    } catch(ex) {
+    } catch (ex) {
       // not an element or a dead object, skip
       return -1;
     }
@@ -1937,156 +2198,10 @@ scrapbook-toolbar, scrapbook-toolbar *,
   };
 
   editor.addHistory = () => {
+    // Save active editing in prior to prevent restoring to an editing state.
+    annotator.saveAll();
+
     mutationHandler.addRestorePoint();
-  };
-
-
-  const converter = editor.converter = {
-    convertLegacyObject(elem) {
-      if (elem.nodeName.toLowerCase().startsWith('scrapbook-') || elem.matches('[data-scrapbook-elem]')) { return elem; }
-
-      switch (scrapbook.getScrapbookObjectType(elem)) {
-        case 'linemarker':
-        case 'inline': {
-          editor.addHistory();
-
-          const useNativeTags = scrapbook.getOption("editor.useNativeTags");
-          const hElem = document.createElement(useNativeTags ? 'span' : 'scrapbook-linemarker');
-          if (elem.hasAttribute('data-sb-id')) {
-            const date = new Date(parseInt(elem.getAttribute('data-sb-id'), 10));
-            if (!isNaN(date.valueOf())) {
-              hElem.setAttribute('data-scrapbook-id', scrapbook.dateToId(date));
-            }
-          }
-          hElem.setAttribute('data-scrapbook-elem', 'linemarker');
-          hElem.setAttribute('style', elem.getAttribute('style'));
-          if (elem.hasAttribute('title')) {
-            hElem.setAttribute('title', elem.getAttribute('title'));
-          }
-
-          const newElems = Array.prototype.map.call(
-            scrapbook.getScrapBookObjectElems(elem),
-            (elem) => {
-              const newElem = hElem.cloneNode(false);
-              let node;
-              while (node = elem.firstChild) {
-                newElem.appendChild(node);
-              }
-              elem.parentNode.replaceChild(newElem, elem);
-              return newElem;
-            });
-          newElems[0].classList.add('first');
-          newElems[newElems.length - 1].classList.add('last');
-          return newElems[0];
-        }
-
-        case 'freenote': {
-          editor.addHistory();
-
-          const oldElem = elem;
-          const useNativeTags = scrapbook.getOption("editor.useNativeTags");
-          const newElem = document.createElement(useNativeTags ? 'div' : 'scrapbook-sticky');
-          newElem.setAttribute('data-scrapbook-elem', 'sticky');
-          newElem.classList.add('styled');
-          if (oldElem.style.getPropertyValue('position') === 'static') {
-            newElem.classList.add('relative');
-          }
-          for (const prop of ['left', 'top', 'width', 'height']) {
-            newElem.style.setProperty(prop, oldElem.style.getPropertyValue(prop));
-          }
-
-          let node;
-          while (node = oldElem.firstChild) {
-            newElem.appendChild(node);
-          }
-
-          oldElem.parentNode.replaceChild(newElem, oldElem);
-          return newElem;
-        }
-
-        case 'sticky':
-        case 'sticky-header':
-        case 'sticky-footer':
-        case 'sticky-save':
-        case 'sticky-delete': {
-          let oldElem = elem;
-          while (oldElem && scrapbook.getScrapbookObjectType(oldElem) !== 'sticky') {
-            oldElem = oldElem.parentNode;
-          }
-          if (!oldElem) {
-            return elem;
-          }
-
-          editor.addHistory();
-
-          let text;
-          try {
-            if (oldElem.lastChild.nodeName == "#text") {
-              // general cases
-              text = oldElem.lastChild.data;
-            } else {
-              // SB/SBP unsaved sticky
-              text = oldElem.childNodes[1].value;
-            }
-          } catch (ex) {
-            // Data corrupted? Treat as no text.
-            console.error(ex);
-          }
-
-          const useNativeTags = scrapbook.getOption("editor.useNativeTags");
-          const newElem = document.createElement(useNativeTags ? 'div' : 'scrapbook-sticky');
-          newElem.setAttribute('data-scrapbook-elem', 'sticky');
-          newElem.classList.add('styled');
-          newElem.classList.add('plaintext');
-          if (oldElem.classList.contains('scrapbook-sticky-relative')) {
-            newElem.classList.add('relative');
-          }
-          for (const prop of ['left', 'top', 'width', 'height']) {
-            newElem.style.setProperty(prop, oldElem.style.getPropertyValue(prop));
-          }
-
-          newElem.textContent = text;
-
-          oldElem.parentNode.replaceChild(newElem, oldElem);
-          return newElem;
-        }
-
-        case 'block-comment': {
-          editor.addHistory();
-
-          let oldElem = elem;
-
-          let text;
-          try {
-            if (oldElem.firstChild.nodeName == "#text") {
-              // general cases
-              text = oldElem.firstChild.data;
-            } else {
-              // unsaved block comment
-              text = oldElem.firstChild.firstChild.value;
-            }
-          } catch (ex) {
-            // Data corrupted? Treat as no text.
-            console.error(ex);
-          }
-
-          const useNativeTags = scrapbook.getOption("editor.useNativeTags");
-          const newElem = document.createElement(useNativeTags ? 'div' : 'scrapbook-sticky');
-          newElem.setAttribute('data-scrapbook-elem', 'sticky');
-          newElem.classList.add('plaintext');
-          newElem.classList.add('relative');
-          newElem.setAttribute('style', oldElem.getAttribute('style'));
-          newElem.style.setProperty('white-space', 'pre-wrap');
-
-          newElem.textContent = text;
-
-          oldElem.parentNode.replaceChild(newElem, oldElem);
-          return newElem;
-        }
-      }
-
-      return elem;
-    },
   };
 
 
@@ -2111,7 +2226,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
       switch (objectType) {
         case 'sticky': {
           if (target.shadowRoot) {
-            const innerTarget = getEventInnerTarget(event);
+            const innerTarget = event.composedPath()[0];
             if (innerTarget.matches('header')) {
               if (target.classList.contains('relative')) {
                 break;
@@ -2170,32 +2285,19 @@ scrapbook-toolbar, scrapbook-toolbar *,
           // A click event fires when mouse down and up in the same element,
           // including a selection. Exclude selection as the user probably
           // doesn't want a popup when he makes a selection.
-          if (!window.getSelection().isCollapsed) { break; }
+          if (scrapbook.getSelection().type === 'Range') { break; }
 
           event.preventDefault();
 
-          // convert legacy ScrapBook objects into WebScrapBook version
-          target = converter.convertLegacyObject(target);
-
-          const {clientX, clientY} = getEventPositionObject(event);
-          annotator.editLineMarker(target, {clientX, clientY});
+          annotator.editLineMarker(target);
           break;
         }
 
-        case 'sticky':
-        case 'sticky-header':
-        case 'sticky-footer':
-        case 'sticky-save':
-        case 'sticky-delete':
-        case 'freenote':
-        case 'block-comment': {
-          if (!window.getSelection().isCollapsed) { break; }
+        case 'sticky': {
+          if (scrapbook.getSelection().type === 'Range') { break; }
           if (target.shadowRoot) { break; }
 
           event.preventDefault();
-
-          // convert legacy ScrapBook objects into WebScrapBook version
-          target = converter.convertLegacyObject(target);
 
           annotator.editSticky(target);
           break;
@@ -2219,13 +2321,10 @@ scrapbook-toolbar, scrapbook-toolbar *,
       // create a whole page mask to prevent mouse event be trapped by an iframe
       const maskElem = draggingData.mask = document.createElement('scrapbook-toolbar-mask');
       maskElem.setAttribute('data-scrapbook-elem', 'toolbar-mask');
-      maskElem.style.setProperty('display', 'block', 'important');
+      maskElem.style.setProperty('all', 'initial', 'important');
       maskElem.style.setProperty('position', 'fixed', 'important');
-      maskElem.style.setProperty('z-index', '2147483640', 'important');
-      maskElem.style.setProperty('top', 0, 'important');
-      maskElem.style.setProperty('right', 0, 'important');
-      maskElem.style.setProperty('bottom', 0, 'important');
-      maskElem.style.setProperty('left', 0, 'important');
+      maskElem.style.setProperty('z-index', '2147483647', 'important');
+      maskElem.style.setProperty('inset', 0, 'important');
       document.documentElement.appendChild(maskElem);
 
       window.addEventListener("mousemove", onMouseMove, true);
@@ -2279,18 +2378,11 @@ scrapbook-toolbar, scrapbook-toolbar *,
       return event.changedTouches ? event.changedTouches[0] : event;
     };
 
-    const getEventInnerTarget = (event) => {
-      // Get the targeted element in the shadow root.
-      // In Firefox event.explicitOriginalTarget is the target in shadowRoot.
-      // In Chromium event.path bubbles from the target in shadowRoot upwards.
-      return event.path ? event.path[0] : event.explicitOriginalTarget;
-    };
-
     const annotator = {
       active: false,
 
       /**
-       * @kind invokable
+       * @type invokable
        */
       toggle({willActive = !this.active} = {}) {
         if (willActive) {
@@ -2327,8 +2419,8 @@ scrapbook-toolbar, scrapbook-toolbar *,
       },
 
       saveAll() {
-        for (const elem of document.querySelectorAll('[data-scrapbook-elem="toolbar-popup"].editLineMarker')) {
-          this.saveLineMarker(elem);
+        for (const elem of document.querySelectorAll('[data-scrapbook-elem="toolbar-prompt"]')) {
+          elem.remove();
         }
         for (const elem of document.querySelectorAll('[data-scrapbook-elem="sticky"].editing')) {
           this.saveSticky(elem);
@@ -2336,12 +2428,19 @@ scrapbook-toolbar, scrapbook-toolbar *,
       },
 
       /**
-       * @kind invokable
+       * @type invokable
        */
-      editLineMarker(elem, pos, skipHistory = false) {
+      async editLineMarker(elem) {
+        // this is unexpected
         if (elem.shadowRoot) { return; }
 
-        this.saveAll();
+        const content = await scrapbook.prompt(scrapbook.lang('EditorEditAnnotation'), elem.title);
+
+        if (content == null) {
+          return;
+        }
+
+        editor.addHistory();
 
         // Retrieve element ID. Generate a new one if none.
         let id = elem.getAttribute('data-scrapbook-id');
@@ -2350,189 +2449,44 @@ scrapbook-toolbar, scrapbook-toolbar *,
           elem.setAttribute('data-scrapbook-id', id);
         }
 
-        // fallback to popup if shadow DOM is not supported
-        if (!SHADOW_DOM_SUPPORTED) {
-          const annotation0 = elem.title;
-          const annotation = scrapbook.prompt(scrapbook.lang('EditorEditAnnotationPrompt', [annotation0]), annotation0);
-          if (annotation === null || annotation === annotation0) {
-            return;
-          }
-
-          if (!skipHistory) {
-            editor.addHistory();
-          }
-
-          for (const part of scrapbook.getScrapBookObjectElems(elem)) {
-            if (annotation) {
-              part.setAttribute('title', annotation);
-            } else {
-              part.removeAttribute('title');
-            }
-          }
-          return;
-        }
-
-        if (!skipHistory) {
-          editor.addHistory();
-        }
-
-        elem.classList.add('editing');
-
-        const popupElem = document.createElement('scrapbook-toolbar-popup');
-        popupElem.setAttribute('data-scrapbook-elem', 'toolbar-popup');
-        popupElem.setAttribute('data-scrapbook-id', id);
-        popupElem.classList.add('editLineMarker');
-        popupElem.addEventListener('keydown', (event) => {
-          if (event.code === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            this.cancelLineMarker(popupElem);
-          }
-        });
-
-        const shadowRoot = popupElem.attachShadow({mode: 'open'});
-
-        const styleElem = shadowRoot.appendChild(document.createElement('style'));
-        styleElem.textContent = `\
-:host {
-  all: initial;
-  display: block;
-  position: absolute;
-  z-index: 2147483640;
-  margin: auto;
-  width: 80%;
-}
-:host > form {
-  all: initial;
-  display: block;
-  padding: .5em;
-  border: 1px solid #CCCCCC;
-  border-radius: .25em;
-  background: #EEEEEE;
-  box-shadow: .15em .15em .3em black;
-}
-:host > form > header {
-  font: .875em/1.5 sans-serif;
-}
-:host > form > textarea {
-  box-sizing: border-box;
-  padding: .25em;
-  width: 100%;
-  min-height: 100px;
-  resize: none;
-}
-:host > form > footer {
-  display: flex;
-  height: 1.25em;
-  justify-content: flex-end;
-}
-:host > form > footer input {
-  margin: 0 .25em;
-}
-`;
-
-        const formElem = shadowRoot.appendChild(document.createElement('form'));
-        formElem.addEventListener('submit', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.saveLineMarker(popupElem);
-        });
-        formElem.addEventListener('keydown', (event) => {
-           if (event.code === 'KeyS' && event.altKey) {
-            event.preventDefault();
-            event.stopPropagation();
-            this.saveLineMarker(popupElem);
-          } else if (event.code === 'KeyC' && event.altKey) {
-            event.preventDefault();
-            event.stopPropagation();
-            this.cancelLineMarker(popupElem);
-          } else if (event.code === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            this.cancelLineMarker(popupElem);
-          }
-        });
-
-        const headerElem = formElem.appendChild(document.createElement('header'));
-        headerElem.textContent = scrapbook.lang('EditorEditAnnotation');
-
-        const bodyElem = formElem.appendChild(document.createElement('textarea'));
-        bodyElem.textContent = elem.title;
-
-        const footerElem = formElem.appendChild(document.createElement('footer'));
-
-        const saveElem = footerElem.appendChild(document.createElement('input'));
-        saveElem.setAttribute('type', 'submit');
-        saveElem.value = scrapbook.lang('OK');
-        saveElem.title = scrapbook.lang('EditorLineMarkerSave', ['Alt+S']);
-        saveElem.classList.add('save');
-
-        const cancelElem = footerElem.appendChild(document.createElement('input'));
-        cancelElem.setAttribute('type', 'button');
-        cancelElem.classList.add('cancel');
-        cancelElem.value = scrapbook.lang('Cancel');
-        cancelElem.title = scrapbook.lang('EditorLineMarkerCancel', ['Alt+C']);
-        cancelElem.addEventListener('click', (event) => {
-          this.cancelLineMarker(popupElem);
-        });
-
-        document.body.appendChild(popupElem);
-        let x = Math.round((window.innerWidth - popupElem.offsetWidth) / 2);
-        let y = pos.clientY + POINTER_SIZE;
-        if (y + popupElem.offsetHeight > window.innerHeight) {
-          y = pos.clientY - POINTER_SIZE - popupElem.offsetHeight;
-        }
-
-        popupElem.style.setProperty('left', (window.scrollX + x) + 'px');
-        popupElem.style.setProperty('top', (window.scrollY + y) + 'px');
-
-        bodyElem.focus();
-      },
-
-      saveLineMarker(popupElem) {
-        if (!popupElem.shadowRoot) { return; }
-
-        const annotation = popupElem.shadowRoot.querySelector('textarea').value;
-        popupElem.remove();
-        for (const part of scrapbook.getScrapBookObjectElems(popupElem)) {
-          part.classList.remove('editing');
-          if (!part.classList.length) { part.removeAttribute('class'); }
-          if (annotation) {
-            part.setAttribute('title', annotation);
+        for (const part of scrapbook.getScrapBookObjectElems(elem)) {
+          if (content.trim()) {
+            part.setAttribute('title', content);
           } else {
             part.removeAttribute('title');
           }
         }
       },
 
-      cancelLineMarker(popupElem) {
-        popupElem.remove();
-      },
-
       /**
-       * @kind invokable
+       * @type invokable
        * @param {boolean} [richText] - Whether content is rich text.
        * @param {Node|false} [refNode] - The ref node to create a sticky note around.
        *     Auto-detected by selection when unspecified. False to not create a relative note.
        */
       createSticky({richText, refNode} = {}) {
-        if (!SHADOW_DOM_SUPPORTED) { return; }
-
         editor.addHistory();
 
         const useNativeTags = scrapbook.getOption("editor.useNativeTags");
         const mainElem = document.createElement(useNativeTags ? 'div' : 'scrapbook-sticky');
         mainElem.setAttribute('data-scrapbook-id', scrapbook.dateToId());
         mainElem.setAttribute('data-scrapbook-elem', 'sticky');
+        mainElem.dir = scrapbook.lang('@@bidi_dir');
         mainElem.classList.add('styled');
         if (!richText) {
           mainElem.classList.add('plaintext');
         }
 
         if (!refNode && refNode !== false) {
-          const sel = window.getSelection();
-          if (sel && !sel.isCollapsed) {
+          const sel = scrapbook.getSelection();
+          if (sel.type === 'Range') {
             refNode = sel.anchorNode;
+          }
+
+          // Don't allow a relative sticky note in a shadow root, which makes
+          // the annotation CSS not apply on it.
+          if (refNode && refNode.getRootNode() instanceof ShadowRoot) {
+            refNode = false;
           }
         }
 
@@ -2570,7 +2524,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
           // if it's before a (relative) sticky note, move it to be after
           let nextNode;
           while ((nextNode = refNode.nextSibling)
-              && scrapbook.getScrapbookObjectType(nextNode) === "sticky")  {
+              && scrapbook.getScrapbookObjectType(nextNode) === "sticky") {
             refNode = refNode.nextSibling;
           }
 
@@ -2578,15 +2532,12 @@ scrapbook-toolbar, scrapbook-toolbar *,
         }
       },
 
-      editSticky(mainElem, skipHistory = false) {
+      async editSticky(mainElem, skipHistory = false) {
         if (mainElem.shadowRoot) { return; }
 
-        this.saveAll();
-
-        if (!SHADOW_DOM_SUPPORTED || !mainElem.classList.contains('styled')) {
+        if (!mainElem.classList.contains('styled')) {
           const attr = mainElem.classList.contains('plaintext') ? 'textContent' : 'innerHTML';
-          let content = mainElem[attr];
-          content = scrapbook.prompt(scrapbook.lang('EditorEditAnnotationPrompt', [content]), content);
+          const content = await scrapbook.prompt(scrapbook.lang('EditorEditAnnotation'), mainElem[attr]);
           if (content === null) {
             return;
           }
@@ -2602,6 +2553,12 @@ scrapbook-toolbar, scrapbook-toolbar *,
         if (!skipHistory) {
           editor.addHistory();
         }
+
+        // Replace mainElem with a clone to prevent attaching shadow root,
+        // which will show up inconsistently after an undo.
+        const mainElemNew = mainElem.cloneNode(true);
+        mainElem.replaceWith(mainElemNew);
+        mainElem = mainElemNew;
 
         const shadowRoot = mainElem.attachShadow({mode: 'open'});
         mainElem.classList.add('editing');
@@ -2779,13 +2736,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
     const FORBID_NODES = `scrapbook-toolbar, scrapbook-toolbar *`;
     const TOOLTIP_NODES = `scrapbook-toolbar-tooltip, scrapbook-toolbar-tooltip *`;
     const SKIP_NODES = `html, head, body, ${FORBID_NODES}, ${TOOLTIP_NODES}`;
-    const ATOMIC_NODES = [
-      'svg, math',
-      '[data-sb-obj="freenote"]', // SBX
-      '[data-sb-obj="annotation"]', // 1.12.0a <= SBX <= 1.12.0a45
-      '.scrapbook-sticky', // SB, SBX <= 1.12.0a34
-      '.scrapbook-block-comment', // SB < 0.19?
-    ].join(', ');
+    const ATOMIC_NODES = `svg, math`;
 
     let lastTarget = null;
     let lastTouchTarget = null;
@@ -2884,7 +2835,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
       active: false,
 
       /**
-       * @kind invokable
+       * @type invokable
        */
       toggle({willActive = !this.active} = {}) {
         if (willActive) {
@@ -2938,7 +2889,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
               frameIdExcept: core.frameId,
             },
           });
-        })()
+        })();
 
         domEraser.clearTarget();
 
@@ -2947,16 +2898,25 @@ scrapbook-toolbar, scrapbook-toolbar *,
 
         lastTarget = elem;
 
+        let outlineStyle;
+        let labelBody;
         if (scrapbook.getScrapBookObjectRemoveType(elem) <= 0) {
           const id = elem.id;
           const classText = Array.from(elem.classList.values()).map(x => '.' + x).join(''); // elements like svg doesn't support .className property
-          var outlineStyle = '2px solid red';
-          var labelHtml = `<b style="all: unset !important; font-weight: bold !important;">${scrapbook.escapeHtml(elem.tagName.toLowerCase(), false, false, true)}</b>` + 
-              (id ? "#" + scrapbook.escapeHtml(id, false, false, true) : "") + 
-              classText;
+          outlineStyle = '2px solid red';
+          labelBody = document.createDocumentFragment();
+          const b = labelBody.appendChild(document.createElement('b'));
+          b.style = 'all: unset !important; font-weight: bold !important;';
+          b.textContent = elem.tagName.toLowerCase();
+          if (id) {
+            labelBody.appendChild(document.createTextNode("#" + id));
+          }
+          if (classText) {
+            labelBody.appendChild(document.createTextNode(classText));
+          }
         } else {
-          var outlineStyle = '2px dashed blue';
-          var labelHtml = scrapbook.escapeHtml(scrapbook.lang("EditorButtonDOMEraserRemoveEdit"), false, false, true);
+          outlineStyle = '2px dashed blue';
+          labelBody = document.createTextNode(scrapbook.lang("EditorButtonDOMEraserRemoveEdit"));
         }
 
         mutationHandler.addIgnoreStartPoint();
@@ -2990,12 +2950,12 @@ scrapbook-toolbar, scrapbook-toolbar *,
         labelElem.style.setProperty('background-color', '#fff0cc', 'important');
         labelElem.style.setProperty('font-size', '12px', 'important');
         labelElem.style.setProperty('font-family', 'sans-serif', 'important');
-        labelElem.innerHTML = labelHtml;
+        labelElem.appendChild(labelBody);
         document.body.appendChild(labelElem);
 
         const boundingRect = elem.getBoundingClientRect();
         const viewport = scrapbook.getViewport(window);
-        const toolbarHeight = editor.element ? editor.element.offsetHeight : 0;
+        const toolbarHeight = editor.internalElement ? editor.internalElement.offsetHeight : 0;
         const availX = viewport.width - labelElem.offsetWidth;
         const availY = viewport.height - toolbarHeight - labelElem.offsetHeight;
         let x = boundingRect.left;
@@ -3107,7 +3067,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
     active: false,
 
     /**
-     * @kind invokable
+     * @type invokable
      */
     async toggle({willActive = !this.active} = {}) {
       if (willActive) {
@@ -3129,9 +3089,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('bold', false, null);`,
+          cmd: "editor.htmlEditor._strong",
         },
       });
+    },
+
+    _strong() {
+      document.execCommand('bold', false, null);
     },
 
     async em() {
@@ -3139,9 +3103,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('italic', false, null);`,
+          cmd: "editor.htmlEditor._em",
         },
       });
+    },
+
+    _em() {
+      document.execCommand('italic', false, null);
     },
 
     async underline() {
@@ -3149,9 +3117,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('underline', false, null);`,
+          cmd: "editor.htmlEditor._underline",
         },
       });
+    },
+
+    _underline() {
+      document.execCommand('underline', false, null);
     },
 
     async strike() {
@@ -3159,9 +3131,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('strikeThrough', false, null);`,
+          cmd: "editor.htmlEditor._strike",
         },
       });
+    },
+
+    _strike() {
+      document.execCommand('strikeThrough', false, null);
     },
 
     async superscript() {
@@ -3169,9 +3145,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('superscript', false, null);`,
+          cmd: "editor.htmlEditor._superscript",
         },
       });
+    },
+
+    _superscript() {
+      document.execCommand('superscript', false, null);
     },
 
     async subscript() {
@@ -3179,35 +3159,48 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('subscript', false, null);`,
+          cmd: "editor.htmlEditor._subscript",
         },
       });
     },
 
-    async foreColor() {
+    _subscript() {
+      document.execCommand('subscript', false, null);
+    },
+
+    async color() {
       const frameId = await editor.getFocusedFrameId();
-      const color = prompt(scrapbook.lang('EditorButtonHtmlEditorFgColorPrompt'));
-      if (!color) { return; }
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
           frameId,
-          code: `document.execCommand('styleWithCSS', false, true); document.execCommand('foreColor', false, "${scrapbook.escapeQuotes(color)}");`,
+          cmd: "editor.htmlEditor._color",
         },
       });
     },
 
-    async hiliteColor() {
-      const frameId = await editor.getFocusedFrameId();
-      const color = prompt(scrapbook.lang('EditorButtonHtmlEditorBgColorPrompt'));
-      if (!color) { return; }
-      return await scrapbook.invokeExtensionScript({
-        cmd: "background.invokeEditorCommand",
-        args: {
-          frameId,
-          code: `document.execCommand('styleWithCSS', false, true); document.execCommand('hiliteColor', false, "${scrapbook.escapeQuotes(color)}");`,
-        },
+    async _color() {
+      const sel = scrapbook.getSelection();
+
+      // backup current selection ranges
+      const ranges = scrapbook.getSelectionRanges(sel);
+
+      const result = await scrapbook.openModalWindow({
+        url: browser.runtime.getURL('editor/color.html'),
+        windowCreateData: {width: 400, height: 200},
       });
+
+      // restore selection ranges after await
+      sel.removeAllRanges();
+      for (const range of ranges) {
+        sel.addRange(range);
+      }
+
+      if (!result) { return; }
+
+      document.execCommand('styleWithCSS', false, true);
+      if (result.fgUse && result.fg) { document.execCommand('foreColor', false, result.fg); }
+      if (result.bgUse && result.bg) { document.execCommand('hiliteColor', false, result.bg); }
     },
 
     async formatBlockP() {
@@ -3215,9 +3208,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'p');`,
+          cmd: "editor.htmlEditor._formatBlockP",
         },
       });
+    },
+
+    _formatBlockP() {
+      document.execCommand('formatBlock', false, 'p');
     },
 
     async formatBlockH1() {
@@ -3225,9 +3222,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h1');`,
+          cmd: "editor.htmlEditor._formatBlockH1",
         },
       });
+    },
+
+    _formatBlockH1() {
+      document.execCommand('formatBlock', false, 'h1');
     },
 
     async formatBlockH2() {
@@ -3235,9 +3236,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h2');`,
+          cmd: "editor.htmlEditor._formatBlockH2",
         },
       });
+    },
+
+    _formatBlockH2() {
+      document.execCommand('formatBlock', false, 'h2');
     },
 
     async formatBlockH3() {
@@ -3245,9 +3250,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h3');`,
+          cmd: "editor.htmlEditor._formatBlockH3",
         },
       });
+    },
+
+    _formatBlockH3() {
+      document.execCommand('formatBlock', false, 'h3');
     },
 
     async formatBlockH4() {
@@ -3255,9 +3264,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h4');`,
+          cmd: "editor.htmlEditor._formatBlockH4",
         },
       });
+    },
+
+    _formatBlockH4() {
+      document.execCommand('formatBlock', false, 'h4');
     },
 
     async formatBlockH5() {
@@ -3265,9 +3278,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h5');`,
+          cmd: "editor.htmlEditor._formatBlockH5",
         },
       });
+    },
+
+    _formatBlockH5() {
+      document.execCommand('formatBlock', false, 'h5');
     },
 
     async formatBlockH6() {
@@ -3275,9 +3292,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'h6');`,
+          cmd: "editor.htmlEditor._formatBlockH6",
         },
       });
+    },
+
+    _formatBlockH6() {
+      document.execCommand('formatBlock', false, 'h6');
     },
 
     async formatBlockDiv() {
@@ -3285,9 +3306,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'div');`,
+          cmd: "editor.htmlEditor._formatBlockDiv",
         },
       });
+    },
+
+    _formatBlockDiv() {
+      document.execCommand('formatBlock', false, 'div');
     },
 
     async formatBlockPre() {
@@ -3295,9 +3320,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('formatBlock', false, 'pre');`,
+          cmd: "editor.htmlEditor._formatBlockPre",
         },
       });
+    },
+
+    _formatBlockPre() {
+      document.execCommand('formatBlock', false, 'pre');
     },
 
     async listUnordered() {
@@ -3305,9 +3334,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('insertUnorderedList', false, null);`,
+          cmd: "editor.htmlEditor._listUnordered",
         },
       });
+    },
+
+    _listUnordered() {
+      document.execCommand('insertUnorderedList', false, null);
     },
 
     async listOrdered() {
@@ -3315,9 +3348,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('insertOrderedList', false, null);`,
+          cmd: "editor.htmlEditor._listOrdered",
         },
       });
+    },
+
+    _listOrdered() {
+      document.execCommand('insertOrderedList', false, null);
     },
 
     async outdent() {
@@ -3325,9 +3362,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('outdent', false, null);`,
+          cmd: "editor.htmlEditor._outdent",
         },
       });
+    },
+
+    _outdent() {
+      document.execCommand('outdent', false, null);
     },
 
     async indent() {
@@ -3335,9 +3376,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('indent', false, null);`,
+          cmd: "editor.htmlEditor._indent",
         },
       });
+    },
+
+    _indent() {
+      document.execCommand('indent', false, null);
     },
 
     async justifyLeft() {
@@ -3345,9 +3390,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('justifyLeft', false, null);`,
+          cmd: "editor.htmlEditor._justifyLeft",
         },
       });
+    },
+
+    _justifyLeft() {
+      document.execCommand('justifyLeft', false, null);
     },
 
     async justifyCenter() {
@@ -3355,9 +3404,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('justifyCenter', false, null);`,
+          cmd: "editor.htmlEditor._justifyCenter",
         },
       });
+    },
+
+    _justifyCenter() {
+      document.execCommand('justifyCenter', false, null);
     },
 
     async justifyRight() {
@@ -3365,9 +3418,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('justifyRight', false, null);`,
+          cmd: "editor.htmlEditor._justifyRight",
         },
       });
+    },
+
+    _justifyRight() {
+      document.execCommand('justifyRight', false, null);
     },
 
     async justifyFull() {
@@ -3375,9 +3432,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('justifyFull', false, null);`,
+          cmd: "editor.htmlEditor._justifyFull",
         },
       });
+    },
+
+    _justifyFull() {
+      document.execCommand('justifyFull', false, null);
     },
 
     async createLink() {
@@ -3388,9 +3449,14 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId,
-          code: `document.execCommand('createLink', false, "${scrapbook.escapeQuotes(url)}");`,
+          cmd: "editor.htmlEditor._createLink",
+          args: {url},
         },
       });
+    },
+
+    _createLink({url}) {
+      document.execCommand('createLink', false, url);
     },
 
     async hr() {
@@ -3398,9 +3464,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('insertHorizontalRule', false, null);`,
+          cmd: "editor.htmlEditor._hr",
         },
       });
+    },
+
+    _hr() {
+      document.execCommand('insertHorizontalRule', false, null);
     },
 
     async todo() {
@@ -3408,9 +3478,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('insertHTML', false, '<input type="checkbox" data-scrapbook-elem="todo"/>');`,
+          cmd: "editor.htmlEditor._todo",
         },
       });
+    },
+
+    _todo() {
+      document.execCommand('insertHTML', false, '<input type="checkbox" data-scrapbook-elem="todo"/>');
     },
 
     async insertDate() {
@@ -3421,22 +3495,105 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('insertText', false, "${scrapbook.escapeQuotes(dateStr)}");`,
+          cmd: "editor.htmlEditor._insertDate",
+          args: {dateStr},
         },
       });
     },
 
+    _insertDate({dateStr}) {
+      document.execCommand('insertText', false, dateStr);
+    },
+
     async insertHtml() {
       const frameId = await editor.getFocusedFrameId();
-      const html = prompt(scrapbook.lang('EditorButtonHtmlEditorInsertHtmlPrompt'));
-      if (!html) { return; }
+
       return await scrapbook.invokeExtensionScript({
         cmd: "background.invokeEditorCommand",
         args: {
           frameId,
-          code: `document.execCommand('insertHTML', false, "${scrapbook.escapeQuotes(html)}");`,
+          cmd: "editor.htmlEditor._insertHtml",
         },
       });
+    },
+
+    async _insertHtml() {
+      const sel = scrapbook.getSelection();
+
+      // backup current selection ranges
+      const ranges = scrapbook.getSelectionRanges(sel);
+
+      const collapsed = ranges[0].collapsed;
+
+      const data = {
+        preTag: "",
+        preContext: "",
+        value: "",
+        postContext: "",
+        postTag: "",
+      };
+
+      let ac;
+      if (!collapsed) {
+        // get selection area to edit
+        const range = ranges[0];
+        ac = getReplaceableNode(range.commonAncestorContainer);
+        const source = ac.outerHTML;
+        const sourceInner = ac.innerHTML;
+        const istart = source.lastIndexOf(sourceInner, source.lastIndexOf('<'));
+        const start = scrapbook.getOffsetInSource(ac, range.startContainer, range.startOffset);
+        const end = scrapbook.getOffsetInSource(ac, range.endContainer, range.endOffset);
+        const iend = istart + sourceInner.length;
+        data.preTag = source.substring(0, istart);
+        data.preContext = source.substring(istart, start);
+        data.value = source.substring(start, end);
+        data.postContext = source.substring(end, iend);
+        data.postTag = source.substring(iend);
+      }
+
+      const result = await scrapbook.openModalWindow({
+        url: browser.runtime.getURL('editor/insertHtml.html'),
+        args: data,
+        windowCreateData: {width: 600, height: 600},
+      });
+
+      // restore selection ranges after await
+      sel.removeAllRanges();
+      for (const range of ranges) {
+        sel.addRange(range);
+      }
+
+      if (!result) { return; }
+
+      let html;
+      if (!collapsed) {
+        const range = document.createRange();
+
+        // replace the whole tag in some cases to prevent a bad result
+        if (["TABLE", "A"].includes(ac.nodeName)) {
+          html = data.preTag + result.preContext + result.value + result.postContext + data.postTag;
+          range.selectNode(ac);
+        } else {
+          html = result.preContext + result.value + result.postContext;
+          range.selectNodeContents(ac);
+        }
+
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        html = result.value;
+      }
+
+      document.execCommand("insertHTML", false, html);
+
+      function getReplaceableNode(node) {
+        // replacing these nodes could get a bad and not-undoable result
+        const forbiddenList = ["#text", "THEAD", "TBODY", "TFOOT", "TR"];
+        while (forbiddenList.includes(node.nodeName)) {
+          node = node.parentNode;
+        }
+        return node;
+      }
     },
 
     async removeFormat() {
@@ -3444,9 +3601,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('removeFormat', false, null);`,
+          cmd: "editor.htmlEditor._removeFormat",
         },
       });
+    },
+
+    _removeFormat() {
+      document.execCommand('removeFormat', false, null);
     },
 
     async unlink() {
@@ -3454,9 +3615,13 @@ scrapbook-toolbar, scrapbook-toolbar *,
         cmd: "background.invokeEditorCommand",
         args: {
           frameId: await editor.getFocusedFrameId(),
-          code: `document.execCommand('unlink', false, null);`,
+          cmd: "editor.htmlEditor._unlink",
         },
       });
+    },
+
+    _unlink() {
+      document.execCommand('unlink', false, null);
     },
   };
 
@@ -3484,7 +3649,7 @@ scrapbook-toolbar, scrapbook-toolbar *,
       history: [],
 
       /**
-       * @kind invokable
+       * @type invokable
        */
       toggle({willActive = !this.active} = {}) {
         if (willActive) {
@@ -3727,47 +3892,6 @@ scrapbook-toolbar, scrapbook-toolbar *,
       editor.lastWindowBlurTime = Date.now();
     }
   }, {capture: true, passive: true});
-
-  {
-    const frameNodeSelector = 'frame, iframe';
-    const frameAddObserver = (elem) => {
-      elem.addEventListener("load", (event) => {
-        // console.warn('frame load', event);
-        // init content scripts for all descendant frames as we can hardly
-        // get this specific frame
-        return scrapbook.invokeExtensionScript({
-          cmd: "background.invokeEditorCommand",
-          args: {
-            frameIdExcept: 0,
-            code: `core.frameId;`,
-          },
-        });
-      });
-    }
-
-    const docObserver = new MutationObserver((mutations) => {
-      for (let mutation of mutations) {
-        // console.warn("DOM update", mutation);
-        for (let node of mutation.addedNodes) {
-          if (node.nodeType === 1) {
-            if (node.matches(frameNodeSelector)) {
-              frameAddObserver(node);
-            } else {
-              for (const elem of node.querySelectorAll(frameNodeSelector)) {
-                frameAddObserver(elem);
-              }
-            }
-          }
-        }
-      }
-    });
-    const docObserverConf = {childList: true, subtree: true};
-
-    docObserver.observe(document.documentElement, docObserverConf);
-    for (const elem of document.querySelectorAll(frameNodeSelector)) {
-      frameAddObserver(elem);
-    }
-  }
 
   return editor;
 
